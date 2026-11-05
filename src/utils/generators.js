@@ -70,9 +70,20 @@ export function sanitizePsComment(str) {
     .trim();
 }
 
+export function escapePsSingleQuoted(str) {
+  return sanitizePsComment(str).replace(/'/g, "''");
+}
+
 export function sanitizeDiskNumber(num) {
+  // [BUG-01] Никакого неявного fallback на Disk 0: диск должен быть выбран явно
+  if (num === null || num === undefined || (typeof num === 'string' && num.trim() === '')) {
+    throw new Error('Критическая ошибка: Целевой диск для развертывания не выбран.');
+  }
   const parsed = Number(num);
-  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 0;
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`Недопустимый идентификатор накопителя: "${num}".`);
+  }
+  return parsed;
 }
 
 export function generateDiskpartScript(config) {
@@ -126,7 +137,7 @@ export function generateAutounattendXml(config) {
     </component>
 
     <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
-      <!-- Обход проверки TPM 2.0 / SecureBoot / RAM в WinPE -->
+      <!-- Обход проверки TPM 2.0 / SecureBoot / RAM / CPU / Storage в WinPE -->
       <RunSynchronous>
         <RunSynchronousCommand wcm:action="add">
           <Order>1</Order>
@@ -139,6 +150,14 @@ export function generateAutounattendXml(config) {
         <RunSynchronousCommand wcm:action="add">
           <Order>3</Order>
           <Path>reg add HKLM\\SYSTEM\\Setup\\LabConfig /v BypassRAMCheck /t REG_DWORD /d 1 /f</Path>
+        </RunSynchronousCommand>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>4</Order>
+          <Path>reg add HKLM\\SYSTEM\\Setup\\LabConfig /v BypassCPUCheck /t REG_DWORD /d 1 /f</Path>
+        </RunSynchronousCommand>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>5</Order>
+          <Path>reg add HKLM\\SYSTEM\\Setup\\LabConfig /v BypassStorageCheck /t REG_DWORD /d 1 /f</Path>
         </RunSynchronousCommand>
       </RunSynchronous>
 
@@ -248,7 +267,7 @@ export function generateAutounattendXml(config) {
         <SynchronousCommand wcm:action="add">
           <Order>1</Order>
           <Description>Подготовка рабочего окружения и применение твиков</Description>
-          <CommandLine>powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\Windows\\Setup\\Scripts\\post-install-tweaks.ps1"</CommandLine>
+          <CommandLine>powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "if (Test-Path -LiteralPath 'C:\\Windows\\Setup\\Scripts\\post-install-tweaks.ps1') { &amp; 'C:\\Windows\\Setup\\Scripts\\post-install-tweaks.ps1' } else { foreach ($d in (Get-PSDrive -PSProvider FileSystem)) { $p = Join-Path $d.Root 'RescueUSB\\post-install-tweaks.ps1'; if (Test-Path -LiteralPath $p) { &amp; $p; break } } }"</CommandLine>
         </SynchronousCommand>
       </FirstLogonCommands>
     </component>
@@ -308,6 +327,26 @@ export function generatePostInstallScript(config) {
     `  Get-AppxPackage -Name "*$pkg*" -AllUsers | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue`,
     `  Get-AppxProvisionedPackage -Online | Where-Object DisplayName -like "*$pkg*" | Remove-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue`,
     `}`,
+  ];
+
+  // Profile-specific service/registry configurations matching catalog descriptions
+  if (profile.id === 'light') {
+    lines.push(
+      `# Оптимизация служб для облегчённого профиля Light (снижение потребления ОЗУ)`,
+      `Stop-Service SysMain -Force -ErrorAction SilentlyContinue`,
+      `Set-Service SysMain -StartupType Disabled -ErrorAction SilentlyContinue`,
+      `Stop-Service DiagTrack -Force -ErrorAction SilentlyContinue`,
+      `Set-Service DiagTrack -StartupType Disabled -ErrorAction SilentlyContinue`
+    );
+  } else if (profile.id === 'gaming') {
+    lines.push(
+      `# Активация Игрового режима (Game Mode) для профиля Gaming`,
+      `reg add "HKCU\\Software\\Microsoft\\GameBar" /v AllowAutoGameMode /t REG_DWORD /d 1 /f | Out-Null`,
+      `reg add "HKCU\\Software\\Microsoft\\GameBar" /v AutoGameModeEnabled /t REG_DWORD /d 1 /f | Out-Null`
+    );
+  }
+
+  lines.push(
     ``,
     `Write-Host "=== [2/5] Настройка темы оформления (${theme.title}), обоев и акцентов ===" -ForegroundColor Cyan`,
     `reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize" /v AppsUseLightTheme /t REG_DWORD /d ${isDark ? 0 : 1} /f | Out-Null`,
@@ -334,8 +373,8 @@ export function generatePostInstallScript(config) {
     `    reg add "HKCU\\Control Panel\\Desktop" /v WallPaper /t REG_SZ /d "$wpDst" /f | Out-Null`,
     `    [Win32Wallpaper]::SystemParametersInfo(0x0014, 0, $wpDst, 0x01 -bor 0x02) | Out-Null`,
     `  }`,
-    `}`,
-  ];
+    `}`
+  );
 
   if (theme.classicContext) {
     lines.push(
@@ -390,7 +429,7 @@ export function generatePostInstallScript(config) {
   lines.push(
     ``,
     `Write-Host "=== [5/5] Гибридная установка выбранных программ и драйверов (Offline USB + Winget) ===" -ForegroundColor Cyan`,
-    `# [V2-BUG-02] Поддержка .msi через msiexec.exe, копирование портативных утилит (OCCT.exe) и запуск .exe без -NoNewWindow`,
+    `# [V2-BUG-02] & [V3-BUG-05] Поддержка .msi через msiexec.exe, копирование портативных утилит и проверка ExitCode`,
     `function Install-RescuePackage {`,
     `  param([string]$Title, [string]$WingetId, [string]$OfflineExe, [string]$OfflineArgs)`,
     `  Write-Host "Установка: $Title..." -ForegroundColor Green`,
@@ -401,23 +440,36 @@ export function generatePostInstallScript(config) {
     `      Write-Host "  -> Найден офлайн-пакет $candidate" -ForegroundColor Cyan`,
     `      if ($candidate -match '\\.msi$') {`,
     `        $msiArgs = "/i \`"$candidate\`" $OfflineArgs".Trim()`,
-    `        Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArgs -Wait`,
+    `        $proc = Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArgs -Wait -PassThru`,
+    `        if ($proc -and ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010 -or $proc.ExitCode -eq 1641)) {`,
+    `          $installedOffline = $true`,
+    `        } else {`,
+    `          Write-Host "  [!] MSI-пакет завершился с кодом $($proc.ExitCode), пробуем winget..." -ForegroundColor Yellow`,
+    `        }`,
     `      } elseif ([string]::IsNullOrWhiteSpace($OfflineArgs)) {`,
     `        $portableDir = "$env:ProgramFiles\\RescueUSB_Tools"`,
     `        New-Item -ItemType Directory -Path $portableDir -Force | Out-Null`,
-    `        Copy-Item -LiteralPath $candidate -Destination (Join-Path $portableDir $OfflineExe) -Force`,
-    `        Write-Host "  -> Портативная утилита скопирована в $portableDir\\$OfflineExe" -ForegroundColor Cyan`,
+    `        $dstFile = Join-Path $portableDir $OfflineExe`,
+    `        Copy-Item -LiteralPath $candidate -Destination $dstFile -Force`,
+    `        if (Test-Path -LiteralPath $dstFile) {`,
+    `          $installedOffline = $true`,
+    `          Write-Host "  -> Портативная утилита скопирована в $dstFile" -ForegroundColor Cyan`,
+    `        }`,
     `      } else {`,
-    `        Start-Process -FilePath $candidate -ArgumentList $OfflineArgs -Wait`,
+    `        $proc = Start-Process -FilePath $candidate -ArgumentList $OfflineArgs -Wait -PassThru`,
+    `        if ($proc -and ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010 -or $proc.ExitCode -eq 1641)) {`,
+    `          $installedOffline = $true`,
+    `        } else {`,
+    `          Write-Host "  [!] Офлайн-пакет завершился с кодом $($proc.ExitCode), пробуем winget..." -ForegroundColor Yellow`,
+    `        }`,
     `      }`,
-    `      $installedOffline = $true`,
     `    }`,
     `  }`,
     `  if (-not $installedOffline -and $WingetId) {`,
     `    if (Get-Command winget -ErrorAction SilentlyContinue) {`,
     `      winget install --id "$WingetId" --silent --accept-package-agreements --accept-source-agreements`,
     `    } else {`,
-    `      Write-Host "  [!] Winget недоступен и офлайн-пакет $OfflineExe не найден на флешке." -ForegroundColor Yellow`,
+    `      Write-Host "  [!] Winget недоступен и офлайн-пакет $OfflineExe не установлен." -ForegroundColor Yellow`,
     `    }`,
     `  }`,
     `}`
@@ -429,12 +481,12 @@ export function generatePostInstallScript(config) {
   }
 
   for (const item of installableItems) {
-    const safeTitle = sanitizePsComment(item.title).replace(/"/g, "'");
-    const safeWinget = sanitizePsComment(item.wingetId || '').replace(/"/g, '');
-    const safeOffline = sanitizePsComment(item.offlineInstaller || '').replace(/"/g, '');
-    const safeArgs = sanitizePsComment(item.offlineArgs || '').replace(/"/g, "'");
+    const safeTitle = escapePsSingleQuoted(item.title);
+    const safeWinget = escapePsSingleQuoted(item.wingetId || '');
+    const safeOffline = escapePsSingleQuoted(item.offlineInstaller || '');
+    const safeArgs = escapePsSingleQuoted(item.offlineArgs || '');
     lines.push(
-      `Install-RescuePackage -Title "${safeTitle}" -WingetId "${safeWinget}" -OfflineExe "${safeOffline}" -OfflineArgs "${safeArgs}"`
+      `Install-RescuePackage -Title '${safeTitle}' -WingetId '${safeWinget}' -OfflineExe '${safeOffline}' -OfflineArgs '${safeArgs}'`
     );
   }
 
@@ -486,8 +538,13 @@ if (-not $WimPath -or -not (Test-Path -LiteralPath $WimPath)) {
   exit 1
 }
 
+$diskpartScript = Join-Path $PSScriptRoot "diskpart-script.txt"
+if (-not (Test-Path -LiteralPath $diskpartScript)) {
+  throw "Сценарий разметки $diskpartScript не найден!"
+}
+
 Write-Host "2. Разметка накопителя Disk ${diskNum} через DiskPart..." -ForegroundColor Cyan
-diskpart /s "$PSScriptRoot\\diskpart-script.txt"
+diskpart /s "$diskpartScript"
 if ($LASTEXITCODE -ne 0) {
   throw "Ошибка разметки диска в DiskPart (код ошибки: $LASTEXITCODE)"
 }
@@ -522,16 +579,17 @@ Write-Host "Установка образа завершена! ПК готов 
 `;
 }
 
-// [V2-BUG-08] Include chcp 65001 >nul for proper Cyrillic rendering in WinPE cmd.exe
+// [V2-BUG-08] & [V3-BUG-01] Include chcp 65001 >nul and /wait flag so WinPE does not prematurely reboot
 export function generateStartnetCmd() {
   return `@echo off
 chcp 65001 >nul
 wpeinit
-powercfg /s 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
+powercfg /s 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c >nul 2>nul
 echo Поиск накопителя Rescue USB...
 for %%d in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
   if exist "%%d:\\RescueUSB\\win-rescue-usb.exe" (
-    start "" "%%d:\\RescueUSB\\win-rescue-usb.exe"
+    echo Запуск графического мастера с диска %%d:...
+    start "" /wait "%%d:\\RescueUSB\\win-rescue-usb.exe" --no-sandbox --disable-gpu
     exit /b 0
   )
 )

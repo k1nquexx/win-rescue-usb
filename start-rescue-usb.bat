@@ -2,6 +2,14 @@
 chcp 65001 >nul
 cd /d "%~dp0"
 
+rem [ARCH-01] Проверка наличия Node.js в PATH
+where node >nul 2>nul
+if errorlevel 1 (
+  echo [ОШИБКА] Node.js не найден в PATH. Установите Node.js LTS с https://nodejs.org и повторите запуск.
+  pause
+  exit /b 1
+)
+
 if not exist ".\node_modules\electron\dist\electron.exe" (
   echo [!] Зависимости не установлены. Выполняется npm install...
   call npm.cmd install

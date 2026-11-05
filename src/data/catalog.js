@@ -536,7 +536,7 @@ export const USER_SETTINGS_OPTIONS = [
     title: 'Высокая производительность',
     desc: 'Активирует схему электропитания «Высокая / Максимальная производительность» без сброса частот процессора в простое.',
     defaultChecked: true,
-    reg: 'powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c',
+    reg: 'powercfg -duplicatescheme 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c | Out-Null; powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c',
   },
   {
     id: 'never_sleep_ac',

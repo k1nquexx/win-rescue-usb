@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import defaultBranding from './data/branding.json';
 import {
   WIZARD_STEPS,
@@ -9,7 +9,7 @@ import {
   USER_SETTINGS_OPTIONS,
   FALLBACK_DISKS,
 } from './data/catalog';
-import { buildGeneratedFiles } from './utils/generators';
+import { buildGeneratedFiles, sanitizeWindowsUsername } from './utils/generators';
 import {
   Check,
   HardDrive,
@@ -38,12 +38,13 @@ export default function App() {
   const [themeId, setThemeId] = useState('win11');
   const [colorMode, setColorMode] = useState('dark'); // 'dark' | 'light'
 
-  // Step 3: Disks
+  // Step 3: Disks & Pagination ([V3-BUG-08])
   const [disks, setDisks] = useState(FALLBACK_DISKS);
-  const [selectedDiskNumber, setSelectedDiskNumber] = useState(0);
+  const [selectedDiskNumber, setSelectedDiskNumber] = useState(null); // [BUG-01] нет неявного Disk 0
   const [selectedPartitionId, setSelectedPartitionId] = useState(3);
   const [loadingDisks, setLoadingDisks] = useState(false);
   const [showPartitionModal, setShowPartitionModal] = useState(false);
+  const [diskPage, setDiskPage] = useState(1);
 
   // Step 4: Catalog (Programs, Drivers, Tweaks, RGB)
   const [activeCategory, setActiveCategory] = useState('programs');
@@ -71,9 +72,11 @@ export default function App() {
   );
   const [settingsPage, setSettingsPage] = useState(1);
 
-  // Step 6: Review & Code Preview
+  // Step 6: Review, Code Preview & Export Lock ([V3-BUG-07])
   const [activeCodeTab, setActiveCodeTab] = useState('summary'); // 'summary' | 'unattend' | 'postps1' | 'diskpart'
   const [exportStatus, setExportStatus] = useState(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const exportLockRef = useRef(false);
 
   // Step 7: Installation Simulation & Live Post-Install Preview
   const [installPhase, setInstallPhase] = useState('firstlogon'); // 'winpe' | 'firstlogon'
@@ -94,10 +97,15 @@ export default function App() {
         const res = await window.rescueApi.getDisks();
         if (res?.ok && Array.isArray(res.disks) && res.disks.length > 0) {
           setDisks(res.disks);
+          setDiskPage(1);
           const firstInternal =
             res.disks.find((d) => !d.isUsb && !d.isReadOnly && !d.isOffline) || res.disks[0];
           setSelectedDiskNumber(firstInternal.number);
         }
+      } else {
+        // Браузерный режим (без Electron): демо-диски
+        const demo = FALLBACK_DISKS.find((d) => !d.isUsb && !d.isReadOnly && !d.isOffline);
+        if (demo) setSelectedDiskNumber(demo.number);
       }
     } catch (_err) {
       // Fallback disks remain active
@@ -110,7 +118,7 @@ export default function App() {
     refreshDisks();
   }, []);
 
-  // Auto-advance progress bar when on Step 7
+  // Auto-advance progress bar when on Step 7 and stop interval once 100% is reached
   useEffect(() => {
     if (currentStep !== 7) return;
     setInstallProgress(12);
@@ -123,9 +131,20 @@ export default function App() {
     ];
     const timer = setInterval(() => {
       setInstallProgress((prev) => {
+        if (prev >= 100) {
+          clearInterval(timer);
+          return 100;
+        }
         const next = Math.min(100, prev + 8);
-        const msgIdx = Math.min(messages.length - 1, Math.floor((next / 100) * messages.length));
-        setInstallSubStatus(messages[msgIdx]);
+        if (next >= 100) {
+          setInstallSubStatus(
+            'Готово! Профиль Windows 11 и выбранные компоненты успешно подготовлены.'
+          );
+          clearInterval(timer);
+        } else {
+          const msgIdx = Math.min(messages.length - 1, Math.floor((next / 100) * messages.length));
+          setInstallSubStatus(messages[msgIdx]);
+        }
         return next;
       });
     }, 650);
@@ -133,6 +152,7 @@ export default function App() {
   }, [currentStep, installPhase]);
 
   const effectiveBrandName = brandName.trim() || defaultBranding.brandName || 'Fosters PC';
+  const effectiveUsername = useMemo(() => sanitizeWindowsUsername(username), [username]);
 
   const selectedDisk =
     disks.find((d) => d.number === selectedDiskNumber) ||
@@ -141,8 +161,10 @@ export default function App() {
     FALLBACK_DISKS[0];
 
   // [V2-BUG-03] & [V2-BUG-07] Block proceeding to final steps if target disk is USB, ReadOnly, or Offline
+  const hasExplicitDisk =
+    selectedDiskNumber !== null && disks.some((d) => d.number === selectedDiskNumber);
   const canProceedToInstall = Boolean(
-    selectedDisk && !selectedDisk.isUsb && !selectedDisk.isReadOnly && !selectedDisk.isOffline
+    hasExplicitDisk && selectedDisk && !selectedDisk.isUsb && !selectedDisk.isReadOnly && !selectedDisk.isOffline
   );
 
   // Config bundle for generators
@@ -153,10 +175,10 @@ export default function App() {
       profileId,
       themeId,
       colorMode,
-      selectedDiskNumber: selectedDisk?.number ?? 0,
+      selectedDiskNumber: hasExplicitDisk ? selectedDiskNumber : null,
       selectedItems,
       cpuVendorMode,
-      username,
+      username: effectiveUsername,
       selectedUserSettings,
     }),
     [
@@ -165,10 +187,11 @@ export default function App() {
       profileId,
       themeId,
       colorMode,
-      selectedDisk?.number,
+      hasExplicitDisk,
+      selectedDiskNumber,
       selectedItems,
       cpuVendorMode,
-      username,
+      effectiveUsername,
       selectedUserSettings,
     ]
   );
@@ -177,11 +200,18 @@ export default function App() {
   const shouldComputePreview = currentStep === 3 || currentStep === 6 || currentStep === 8;
   const generatedFiles = useMemo(() => {
     if (!shouldComputePreview) return null;
-    return buildGeneratedFiles(fullConfig);
+    try {
+      return buildGeneratedFiles(fullConfig);
+    } catch (_err) {
+      return null; // диск не выбран — предпросмотр недоступен
+    }
   }, [fullConfig, shouldComputePreview]);
 
-  // [BUG-03], [ERR-04], [V2-BUG-03] Async export with USB disk guard, cancel handling, and boolean return
+  // [BUG-03], [ERR-04], [V2-BUG-03], [V3-BUG-07] Async export with concurrency lock & USB disk guard
   const handleExportBundle = async (askFolder = false) => {
+    if (exportLockRef.current || isExporting) {
+      return false;
+    }
     if (!canProceedToInstall) {
       setExportStatus({
         ok: false,
@@ -190,12 +220,14 @@ export default function App() {
       });
       return false;
     }
+    exportLockRef.current = true;
+    setIsExporting(true);
     try {
-      const filesToExport = generatedFiles || buildGeneratedFiles(fullConfig);
+      // [SEC-02] В main уходит только DTO конфигурации; скрипты генерируются в Main Process
       if (window.rescueApi?.exportUsbBundle) {
         const res = await window.rescueApi.exportUsbBundle({
           askFolder,
-          ...filesToExport,
+          config: fullConfig,
         });
         if (res?.canceled) {
           return false;
@@ -208,6 +240,7 @@ export default function App() {
         return false;
       } else {
         // Browser fallback: download post-install-tweaks.ps1
+        const filesToExport = generatedFiles || buildGeneratedFiles(fullConfig);
         const blob = new Blob([filesToExport.postInstallScript], {
           type: 'text/plain;charset=utf-8',
         });
@@ -223,6 +256,9 @@ export default function App() {
     } catch (err) {
       setExportStatus({ ok: false, error: String(err?.message || err) });
       return false;
+    } finally {
+      exportLockRef.current = false;
+      setIsExporting(false);
     }
   };
 
@@ -237,6 +273,15 @@ export default function App() {
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
     );
   };
+
+  // Step 3 Disk pagination ([V3-BUG-08])
+  const DISKS_PER_PAGE = 3;
+  const totalDiskPages = Math.max(1, Math.ceil(disks.length / DISKS_PER_PAGE));
+  const safeDiskPage = Math.min(diskPage, totalDiskPages);
+  const visibleDisks = disks.slice(
+    (safeDiskPage - 1) * DISKS_PER_PAGE,
+    safeDiskPage * DISKS_PER_PAGE
+  );
 
   // Filtered catalog items for Step 4
   const categoryList = CATALOG_ITEMS[activeCategory] || [];
@@ -652,7 +697,7 @@ export default function App() {
               <div className="grid grid-cols-12 gap-8 items-start">
                 {/* Left 5 cols: Disks list */}
                 <div className="col-span-5 flex flex-col justify-between space-y-3">
-                  {disks.map((d) => {
+                  {visibleDisks.map((d) => {
                     const isBlocked = Boolean(d.isUsb || d.isReadOnly || d.isOffline);
                     const active = d.number === selectedDisk.number && !isBlocked;
                     return (
@@ -712,6 +757,7 @@ export default function App() {
                     );
                   })}
 
+                  {/* [V3-BUG-08] Interactive disk pagination controls */}
                   <div className="flex items-center justify-between pt-4">
                     <button
                       onClick={refreshDisks}
@@ -721,13 +767,25 @@ export default function App() {
                       Обновить
                     </button>
                     <div className="flex items-center gap-2 text-xs text-slate-400 font-mono">
-                      <span className="px-2.5 py-1 rounded bg-[#121a24] border border-[#1f2d3e]">
+                      <button
+                        type="button"
+                        onClick={() => setDiskPage((p) => Math.max(1, p - 1))}
+                        disabled={safeDiskPage <= 1}
+                        className="px-2.5 py-1 rounded bg-[#121a24] hover:bg-[#1a2636] disabled:opacity-40 border border-[#1f2d3e] cursor-pointer"
+                      >
                         &lt;
+                      </button>
+                      <span>
+                        {safeDiskPage} / {totalDiskPages}
                       </span>
-                      <span>1 / 1</span>
-                      <span className="px-2.5 py-1 rounded bg-[#121a24] border border-[#1f2d3e]">
+                      <button
+                        type="button"
+                        onClick={() => setDiskPage((p) => Math.min(totalDiskPages, p + 1))}
+                        disabled={safeDiskPage >= totalDiskPages}
+                        className="px-2.5 py-1 rounded bg-[#121a24] hover:bg-[#1a2636] disabled:opacity-40 border border-[#1f2d3e] cursor-pointer"
+                      >
                         &gt;
-                      </span>
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -907,77 +965,95 @@ export default function App() {
 
                     {/* Items list */}
                     <div className="space-y-2">
-                      {visibleCatalogItems.map((item) => {
-                        const checked = selectedItems.includes(item.id);
-                        const focused = focusedItem?.id === item.id;
-                        return (
-                          <div
-                            key={item.id}
-                            onClick={() => setFocusedItemId(item.id)}
-                            className={`p-3 rounded-lg border transition cursor-pointer ${
-                              focused
-                                ? 'bg-[#0e292d] border-[#00d4b6]'
-                                : 'bg-[#131d2a] border-[#202f42] hover:border-slate-600'
-                            }`}
-                          >
-                            <div className="flex items-center gap-3">
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  toggleCatalogItem(item.id);
-                                  setFocusedItemId(item.id);
-                                }}
-                                className={`w-5 h-5 rounded flex items-center justify-center shrink-0 border cursor-pointer ${
-                                  checked
-                                    ? 'bg-[#00d4b6] border-[#00d4b6] text-slate-950'
-                                    : 'border-slate-500 bg-[#0b1118]'
-                                }`}
-                              >
-                                {checked && <Check className="w-3.5 h-3.5 stroke-[3]" />}
-                              </button>
-
-                              <span
-                                className={`w-7 h-7 rounded-md text-[10px] font-extrabold flex items-center justify-center shrink-0 ${item.badgeColor}`}
-                              >
-                                {item.badge}
-                              </span>
-
-                              <div className="min-w-0 flex-1">
-                                <div className="text-sm font-bold text-white truncate">
-                                  {item.title}
-                                </div>
-                                <div className="text-[11px] text-slate-400 truncate">
-                                  {item.shortDesc}
-                                </div>
-                              </div>
-                            </div>
-
-                            {/* Special sub-selector for CPU tweak (shown at 0:46 in video) */}
-                            {item.id === 'tweak_cpu' && (
-                              <div className="grid grid-cols-3 gap-2 mt-2.5 pt-2 border-t border-[#1e353d]">
-                                {['auto', 'amd', 'intel'].map((mode) => (
-                                  <button
-                                    key={mode}
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setCpuVendorMode(mode);
-                                    }}
-                                    className={`py-1 rounded text-xs font-semibold uppercase transition cursor-pointer ${
-                                      cpuVendorMode === mode
-                                        ? 'bg-[#00d4b6] text-slate-950 font-bold'
-                                        : 'bg-[#0c141d] text-slate-300 border border-[#243447]'
-                                    }`}
-                                  >
-                                    {mode === 'auto' ? 'Авто' : mode.toUpperCase()}
-                                  </button>
-                                ))}
-                              </div>
-                            )}
+                      {visibleCatalogItems.length === 0 ? (
+                        <div className="p-6 text-center rounded-lg bg-[#0b1118] border border-[#1d2a3a] space-y-2">
+                          <div className="text-xs text-slate-400">
+                            По запросу «{searchQuery}» ничего не найдено в этой категории.
                           </div>
-                        );
-                      })}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSearchQuery('');
+                              setCatalogPage(1);
+                            }}
+                            className="text-xs text-[#00d4b6] hover:underline font-semibold cursor-pointer"
+                          >
+                            Сбросить поиск
+                          </button>
+                        </div>
+                      ) : (
+                        visibleCatalogItems.map((item) => {
+                          const checked = selectedItems.includes(item.id);
+                          const focused = focusedItem?.id === item.id;
+                          return (
+                            <div
+                              key={item.id}
+                              onClick={() => setFocusedItemId(item.id)}
+                              className={`p-3 rounded-lg border transition cursor-pointer ${
+                                focused
+                                  ? 'bg-[#0e292d] border-[#00d4b6]'
+                                  : 'bg-[#131d2a] border-[#202f42] hover:border-slate-600'
+                              }`}
+                            >
+                              <div className="flex items-center gap-3">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    toggleCatalogItem(item.id);
+                                    setFocusedItemId(item.id);
+                                  }}
+                                  className={`w-5 h-5 rounded flex items-center justify-center shrink-0 border cursor-pointer ${
+                                    checked
+                                      ? 'bg-[#00d4b6] border-[#00d4b6] text-slate-950'
+                                      : 'border-slate-500 bg-[#0b1118]'
+                                  }`}
+                                >
+                                  {checked && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                                </button>
+
+                                <span
+                                  className={`w-7 h-7 rounded-md text-[10px] font-extrabold flex items-center justify-center shrink-0 ${item.badgeColor}`}
+                                >
+                                  {item.badge}
+                                </span>
+
+                                <div className="min-w-0 flex-1">
+                                  <div className="text-sm font-bold text-white truncate">
+                                    {item.title}
+                                  </div>
+                                  <div className="text-[11px] text-slate-400 truncate">
+                                    {item.shortDesc}
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Special sub-selector for CPU tweak (shown at 0:46 in video) */}
+                              {item.id === 'tweak_cpu' && (
+                                <div className="grid grid-cols-3 gap-2 mt-2.5 pt-2 border-t border-[#1e353d]">
+                                  {['auto', 'amd', 'intel'].map((mode) => (
+                                    <button
+                                      key={mode}
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setCpuVendorMode(mode);
+                                      }}
+                                      className={`py-1 rounded text-xs font-semibold uppercase transition cursor-pointer ${
+                                        cpuVendorMode === mode
+                                          ? 'bg-[#00d4b6] text-slate-950 font-bold'
+                                          : 'bg-[#0c141d] text-slate-300 border border-[#243447]'
+                                      }`}
+                                    >
+                                      {mode === 'auto' ? 'Авто' : mode.toUpperCase()}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })
+                      )}
                     </div>
                   </div>
 
@@ -1080,7 +1156,7 @@ export default function App() {
                 Выбирайте только нужное. Номер заказа можно указать или пропустить после первого входа.
               </p>
 
-              {/* Username input block */}
+              {/* Username input block ([V3-BUG-08]: sanitize reserved names onBlur) */}
               <div className="bg-[#111924] border border-[#1f2d3e] rounded-xl p-4 mb-4">
                 <label className="block text-xs text-slate-400 mb-1.5">
                   Имя пользователя Windows
@@ -1090,9 +1166,7 @@ export default function App() {
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   onBlur={() => {
-                    if (!username.trim()) {
-                      setUsername(defaultBranding.defaultUsername || 'Fosters');
-                    }
+                    setUsername(sanitizeWindowsUsername(username));
                   }}
                   placeholder="Fosters"
                   className="w-full px-4 py-2.5 rounded-lg bg-[#0b1017] border border-[#253548] text-white font-semibold text-sm focus:outline-none focus:border-[#00d4b6]"
@@ -1163,6 +1237,7 @@ export default function App() {
               </button>
               <button
                 onClick={() => {
+                  setUsername(sanitizeWindowsUsername(username));
                   if (!canProceedToInstall) {
                     setCurrentStep(3);
                     return;
@@ -1245,7 +1320,8 @@ export default function App() {
                       </div>
                       <div className="flex justify-between py-1.5 border-b border-[#1b2736]">
                         <span className="text-slate-400">Пользователь:</span>
-                        <span className="font-bold text-[#00d4b6]">{username || 'Fosters'}</span>
+                        {/* [V3-BUG-08] Always display sanitized Windows username */}
+                        <span className="font-bold text-[#00d4b6]">{effectiveUsername}</span>
                       </div>
                       <div className="flex justify-between py-1.5">
                         <span className="text-slate-400">Целевой диск:</span>
@@ -1321,14 +1397,18 @@ export default function App() {
                     <div className="space-y-2 pt-3">
                       <button
                         onClick={() => handleExportBundle(false)}
-                        className="w-full py-2.5 px-4 rounded-lg bg-[#162231] hover:bg-[#1e2e42] border border-[#00d4b6]/50 text-xs font-bold text-[#00d4b6] flex items-center justify-center gap-2 transition cursor-pointer"
+                        disabled={isExporting}
+                        className="w-full py-2.5 px-4 rounded-lg bg-[#162231] hover:bg-[#1e2e42] disabled:opacity-50 border border-[#00d4b6]/50 text-xs font-bold text-[#00d4b6] flex items-center justify-center gap-2 transition cursor-pointer"
                       >
                         <Download className="w-4 h-4" />
-                        Сохранить комплект в папку проекта (usb-export)
+                        {isExporting
+                          ? 'Сохранение комплекта...'
+                          : 'Сохранить комплект в папку проекта (usb-export)'}
                       </button>
                       <button
                         onClick={() => handleExportBundle(true)}
-                        className="w-full py-2.5 px-4 rounded-lg bg-[#141e2b] hover:bg-[#1b2838] border border-[#253549] text-xs font-semibold text-slate-200 flex items-center justify-center gap-2 transition cursor-pointer"
+                        disabled={isExporting}
+                        className="w-full py-2.5 px-4 rounded-lg bg-[#141e2b] hover:bg-[#1b2838] disabled:opacity-50 border border-[#253549] text-xs font-semibold text-slate-200 flex items-center justify-center gap-2 transition cursor-pointer"
                       >
                         <Usb className="w-4 h-4 text-[#00d4b6]" />
                         Выбрать USB-флешку для записи...
@@ -1349,7 +1429,8 @@ export default function App() {
                     </span>
                     <button
                       onClick={() => handleExportBundle(false)}
-                      className="text-[#00d4b6] hover:underline cursor-pointer"
+                      disabled={isExporting}
+                      className="text-[#00d4b6] hover:underline disabled:opacity-50 cursor-pointer"
                     >
                       Сохранить все файлы на диск
                     </button>
@@ -1371,17 +1452,17 @@ export default function App() {
               >
                 Назад
               </button>
-              {/* [ERR-04] Wait for async export before transitioning to Step 7 */}
+              {/* [ERR-04] & [V3-BUG-07] Wait for async export before transitioning to Step 7 */}
               <button
                 onClick={async () => {
                   const ok = await handleExportBundle(false);
                   if (ok) setCurrentStep(7);
                 }}
-                disabled={!canProceedToInstall}
+                disabled={!canProceedToInstall || isExporting}
                 className="px-8 py-3 rounded-lg bg-[#00d4b6] hover:bg-[#00e6c5] disabled:opacity-40 text-slate-950 font-bold text-sm shadow-[0_0_20px_rgba(0,212,182,0.3)] flex items-center gap-2 cursor-pointer"
               >
                 <Play className="w-4 h-4 fill-current" />
-                Начать установку
+                {isExporting ? 'Подготовка...' : 'Начать установку'}
               </button>
             </div>
           </div>
@@ -1561,7 +1642,7 @@ export default function App() {
                   корень любой установочной флешки Windows 11 (Rufus, Ventoy, Media Creation Tool).
                   Папка <code className="text-white">$WinPEDriver$</code> подтянет драйверы сети,{' '}
                   <code className="text-white">autounattend.xml</code> разметит диск и обойдёт OOBE,
-                  а <code className="text-white">$OEM$</code> запустит{' '}
+                  а <code className="text-white">sources\$OEM$</code> запустит{' '}
                   <code className="text-white">post-install-tweaks.ps1</code>.
                 </p>
               </div>
@@ -1572,8 +1653,8 @@ export default function App() {
                 </div>
                 <p className="text-slate-300 leading-relaxed">
                   Соберите портативный <code className="text-white">win-rescue-usb.exe</code> (
-                  <code className="text-white">npm run dist:portable</code>), поместите его в{' '}
-                  <code className="text-white">RescueUSB\</code> на флешке и запустите{' '}
+                  <code className="text-white">npm run dist:portable</code> — файл появится в{' '}
+                  <code className="text-white">release\win-rescue-usb.exe</code>) и запустите{' '}
                   <code className="text-white">scripts\inject-boot-wim.ps1</code> для интеграции в{' '}
                   <code className="text-white">sources\boot.wim</code>.
                 </p>
@@ -1584,14 +1665,16 @@ export default function App() {
               <div className="flex items-center gap-3">
                 <button
                   onClick={() => handleExportBundle(false)}
-                  className="px-6 py-3 rounded-lg bg-[#00d4b6] hover:bg-[#00e6c5] text-slate-950 font-bold text-sm flex items-center gap-2 cursor-pointer"
+                  disabled={isExporting}
+                  className="px-6 py-3 rounded-lg bg-[#00d4b6] hover:bg-[#00e6c5] disabled:opacity-50 text-slate-950 font-bold text-sm flex items-center gap-2 cursor-pointer"
                 >
                   <Download className="w-4 h-4" />
-                  Экспортировать файлы в usb-export
+                  {isExporting ? 'Экспорт...' : 'Экспортировать файлы в usb-export'}
                 </button>
                 <button
                   onClick={() => handleExportBundle(true)}
-                  className="px-5 py-3 rounded-lg bg-[#162231] hover:bg-[#1e2e42] border border-[#2a3c52] text-slate-200 font-semibold text-sm flex items-center gap-2 cursor-pointer"
+                  disabled={isExporting}
+                  className="px-5 py-3 rounded-lg bg-[#162231] hover:bg-[#1e2e42] disabled:opacity-50 border border-[#2a3c52] text-slate-200 font-semibold text-sm flex items-center gap-2 cursor-pointer"
                 >
                   <Usb className="w-4 h-4 text-[#00d4b6]" />
                   Записать напрямую на флешку...

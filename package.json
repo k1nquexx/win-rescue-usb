@@ -9,15 +9,22 @@
     "dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && electron . --dev\"",
     "build": "vite build",
     "dist:portable": "vite build && electron-builder --win portable --x64",
-    "start": "electron ."
+    "start": "electron .",
+    "audit:high": "npm audit --audit-level=high"
   },
   "build": {
     "appId": "com.rescueusb.installer",
     "productName": "win-rescue-usb",
+    "directories": {
+      "output": "release"
+    },
     "files": [
       "dist/**/*",
       "electron/**/*",
+      "src/data/*.js",
       "src/data/branding.json",
+      "src/utils/generators.js",
+      "assets/themes/*.bmp",
       "package.json"
     ],
     "win": {
@@ -28,18 +35,18 @@
     }
   },
   "dependencies": {
-    "lucide-react": "^0.468.0"
+    "lucide-react": "0.468.0"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "^4.0.0",
-    "@vitejs/plugin-react": "^4.3.4",
-    "concurrently": "^9.1.0",
-    "electron": "^33.2.0",
-    "electron-builder": "^25.1.8",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "tailwindcss": "^4.0.0",
-    "vite": "^6.0.3",
-    "wait-on": "^8.0.1"
+    "@tailwindcss/vite": "4.3.4",
+    "@vitejs/plugin-react": "4.7.0",
+    "concurrently": "9.2.5",
+    "electron": "33.4.11",
+    "electron-builder": "25.1.8",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "tailwindcss": "4.3.4",
+    "vite": "6.4.5",
+    "wait-on": "8.0.5"
   }
 }
