@@ -285,14 +285,14 @@ export const CATALOG_ITEMS = {
     },
     {
       id: 'mas',
-      title: 'MAS 3.12 — запуск скрипта активации',
+      title: 'Проверка лицензии Windows (slmgr)',
       badge: 'MS',
       badgeColor: 'bg-teal-600 text-white',
-      shortDesc: 'Проверка статуса лицензии и запуск скрипта при первом входе.',
-      fullDesc: 'Проверяет статус цифровой лицензии Windows 11 через slmgr.vbs /xpr и при наличии локального скрипта MAS_AIO.cmd на флешке выполняет автоматическую проверку активации.',
+      shortDesc: 'Показывает статус цифровой лицензии Windows при первом входе.',
+      fullDesc: 'Проверяет статус цифровой лицензии Windows 11 штатной командой slmgr.vbs /xpr. Сторонние скрипты активации не запускаются.',
       command:
-        'cscript //nologo "$env:SystemRoot\\System32\\slmgr.vbs" /xpr; if ($RescueUsbRoot) { $mas = Join-Path $RescueUsbRoot "RescueUSB\\Installers\\MAS_AIO.cmd"; if (Test-Path -LiteralPath $mas) { Start-Process -FilePath $mas -ArgumentList "/HWID" -Wait -WindowStyle Hidden } }',
-      defaultSelected: true,
+        'cscript //nologo "$env:SystemRoot\\System32\\slmgr.vbs" /xpr',
+      defaultSelected: false,
     },
     {
       id: 'discord',

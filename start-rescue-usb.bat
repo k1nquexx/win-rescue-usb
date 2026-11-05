@@ -11,10 +11,10 @@ if errorlevel 1 (
 )
 
 if not exist ".\node_modules\electron\dist\electron.exe" (
-  echo [!] Зависимости не установлены. Выполняется npm install...
-  call npm.cmd install
+  echo [!] Зависимости не установлены. Выполняется npm ci (по package-lock.json)...
+  call npm.cmd ci
   if errorlevel 1 (
-    echo [ОШИБКА] Не удалось установить зависимости через npm install!
+    echo [ОШИБКА] Не удалось установить зависимости через npm ci!
     pause
     exit /b 1
   )

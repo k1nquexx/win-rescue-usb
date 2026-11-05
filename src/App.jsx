@@ -39,9 +39,12 @@ export default function App() {
   const [colorMode, setColorMode] = useState('dark'); // 'dark' | 'light'
 
   // Step 3: Disks & Pagination ([V3-BUG-08])
-  const [disks, setDisks] = useState(FALLBACK_DISKS);
+  const [disks, setDisks] = useState(() => (window.rescueApi ? [] : FALLBACK_DISKS));
   const [selectedDiskNumber, setSelectedDiskNumber] = useState(null); // [BUG-01] нет неявного Disk 0
-  const [selectedPartitionId, setSelectedPartitionId] = useState(3);
+  const [selectedPartitionId, setSelectedPartitionId] = useState(null);
+  const [partitionMode, setPartitionMode] = useState('wipe_gpt'); // [BUG-01] 'wipe_gpt' | 'existing_partition'
+  const [diskError, setDiskError] = useState(null);
+  const loadingTimerRef = useRef(null);
   const [loadingDisks, setLoadingDisks] = useState(false);
   const [showPartitionModal, setShowPartitionModal] = useState(false);
   const [diskPage, setDiskPage] = useState(1);
@@ -83,39 +86,60 @@ export default function App() {
   const [installProgress, setInstallProgress] = useState(0);
   const [installSubStatus, setInstallSubStatus] = useState('Подготавливаем профиль Windows');
 
-  // Sync Electron window title with brandName (Section 4.1)
+  const resetPartitionChoice = () => {
+    setPartitionMode('wipe_gpt');
+    setSelectedPartitionId(null);
+  };
+
+  // [PERF-02] Debounce синхронизации заголовка окна (Section 4.1)
   useEffect(() => {
     const effectiveBrand = brandName.trim() || defaultBranding.brandName || 'Fosters PC';
-    window.rescueApi?.setWindowTitle?.(effectiveBrand);
+    const timer = setTimeout(() => {
+      window.rescueApi?.setWindowTitle?.(effectiveBrand);
+    }, 250);
+    return () => clearTimeout(timer);
   }, [brandName]);
 
-  // [BUG-02] & [V2-BUG-07] Load real physical disks and default to the first writable non-USB drive
+  // [BUG-02] Реальные диски; в Electron при сбое демо-диски НЕ подставляются, выводится ошибка
   const refreshDisks = async () => {
     setLoadingDisks(true);
+    setDiskError(null);
+    resetPartitionChoice();
     try {
       if (window.rescueApi?.getDisks) {
         const res = await window.rescueApi.getDisks();
         if (res?.ok && Array.isArray(res.disks) && res.disks.length > 0) {
           setDisks(res.disks);
           setDiskPage(1);
-          const firstInternal =
-            res.disks.find((d) => !d.isUsb && !d.isReadOnly && !d.isOffline) || res.disks[0];
-          setSelectedDiskNumber(firstInternal.number);
+          const firstValid = res.disks.find((d) => !d.isUsb && !d.isReadOnly && !d.isOffline);
+          setSelectedDiskNumber(firstValid ? firstValid.number : null);
+        } else {
+          setDisks([]);
+          setSelectedDiskNumber(null);
+          setDiskError(
+            res?.error ||
+              'Не удалось получить список физических дисков (запустите приложение от имени Администратора).'
+          );
         }
       } else {
         // Браузерный режим (без Electron): демо-диски
+        setDisks(FALLBACK_DISKS);
         const demo = FALLBACK_DISKS.find((d) => !d.isUsb && !d.isReadOnly && !d.isOffline);
-        if (demo) setSelectedDiskNumber(demo.number);
+        setSelectedDiskNumber(demo ? demo.number : null);
       }
-    } catch (_err) {
-      // Fallback disks remain active
+    } catch (err) {
+      setDisks([]);
+      setSelectedDiskNumber(null);
+      setDiskError(String(err?.message || err));
     } finally {
-      setTimeout(() => setLoadingDisks(false), 300);
+      clearTimeout(loadingTimerRef.current);
+      loadingTimerRef.current = setTimeout(() => setLoadingDisks(false), 300);
     }
   };
 
   useEffect(() => {
     refreshDisks();
+    return () => clearTimeout(loadingTimerRef.current);
   }, []);
 
   // Auto-advance progress bar when on Step 7 and stop interval once 100% is reached
@@ -154,17 +178,16 @@ export default function App() {
   const effectiveBrandName = brandName.trim() || defaultBranding.brandName || 'Fosters PC';
   const effectiveUsername = useMemo(() => sanitizeWindowsUsername(username), [username]);
 
-  const selectedDisk =
-    disks.find((d) => d.number === selectedDiskNumber) ||
-    disks.find((d) => !d.isUsb && !d.isReadOnly && !d.isOffline) ||
-    disks[0] ||
-    FALLBACK_DISKS[0];
+  // [BUG-02] Никаких неявных подстановок: выбранный диск — только явно выбранный
+  const selectedDisk = disks.find((d) => d.number === selectedDiskNumber) || null;
 
   // [V2-BUG-03] & [V2-BUG-07] Block proceeding to final steps if target disk is USB, ReadOnly, or Offline
   const hasExplicitDisk =
     selectedDiskNumber !== null && disks.some((d) => d.number === selectedDiskNumber);
   const canProceedToInstall = Boolean(
-    hasExplicitDisk && selectedDisk && !selectedDisk.isUsb && !selectedDisk.isReadOnly && !selectedDisk.isOffline
+    hasExplicitDisk &&
+      (partitionMode !== 'existing_partition' || selectedPartitionId !== null) &&
+      selectedDisk && !selectedDisk.isUsb && !selectedDisk.isReadOnly && !selectedDisk.isOffline
   );
 
   // Config bundle for generators
@@ -176,6 +199,8 @@ export default function App() {
       themeId,
       colorMode,
       selectedDiskNumber: hasExplicitDisk ? selectedDiskNumber : null,
+      partitionMode,
+      selectedPartitionId: partitionMode === 'existing_partition' ? selectedPartitionId : null,
       selectedItems,
       cpuVendorMode,
       username: effectiveUsername,
@@ -189,6 +214,8 @@ export default function App() {
       colorMode,
       hasExplicitDisk,
       selectedDiskNumber,
+      partitionMode,
+      selectedPartitionId,
       selectedItems,
       cpuVendorMode,
       effectiveUsername,
@@ -697,9 +724,19 @@ export default function App() {
               <div className="grid grid-cols-12 gap-8 items-start">
                 {/* Left 5 cols: Disks list */}
                 <div className="col-span-5 flex flex-col justify-between space-y-3">
+                  {diskError && (
+                    <div className="p-3 rounded-lg bg-rose-950/60 border border-rose-500/40 text-xs text-rose-200">
+                      Ошибка получения списка дисков: {diskError}
+                    </div>
+                  )}
+                  {!diskError && disks.length === 0 && !loadingDisks && (
+                    <div className="p-3 rounded-lg bg-[#111923] border border-[#1f2d3d] text-xs text-slate-400">
+                      Накопители не найдены. Нажмите «Обновить».
+                    </div>
+                  )}
                   {visibleDisks.map((d) => {
                     const isBlocked = Boolean(d.isUsb || d.isReadOnly || d.isOffline);
-                    const active = d.number === selectedDisk.number && !isBlocked;
+                    const active = d.number === selectedDisk?.number && !isBlocked;
                     return (
                       <div
                         key={d.number}
@@ -707,7 +744,7 @@ export default function App() {
                           // [BUG-02] & [V2-BUG-07] Prevent selecting USB, ReadOnly, or Offline disks
                           if (isBlocked) return;
                           setSelectedDiskNumber(d.number);
-                          setSelectedPartitionId(3);
+                          resetPartitionChoice();
                         }}
                         className={`p-4 rounded-xl border transition ${
                           isBlocked
@@ -793,7 +830,9 @@ export default function App() {
                 {/* Right 7 cols: Automatic GPT Partitions for selected disk */}
                 <div className="col-span-7 bg-[#101823] border border-[#1e2c3d] rounded-xl p-5 space-y-3">
                   <div className="text-xs font-bold tracking-wider uppercase text-[#00d4b6] mb-2">
-                    ДИСК {selectedDisk.number} · {selectedDisk.model}
+                    {selectedDisk
+                      ? `ДИСК ${selectedDisk.number} · ${selectedDisk.model}`
+                      : 'ДИСК НЕ ВЫБРАН'}
                   </div>
 
                   {!canProceedToInstall && (
@@ -804,15 +843,21 @@ export default function App() {
                   )}
 
                   <div className="space-y-2.5">
-                    {selectedDisk.partitions.map((part) => {
+                    {(selectedDisk?.partitions || []).map((part) => {
                       const isMain = part.type === 'основной';
-                      const active = selectedPartitionId === part.id;
+                      const isPicked =
+                        partitionMode === 'existing_partition' && selectedPartitionId === part.id;
+                      const active = isPicked;
                       return (
                         <div
                           key={part.id}
-                          onClick={() => setSelectedPartitionId(part.id)}
+                          onClick={() => {
+                            if (part.type === 'системный') return; // EFI/MSR/Recovery не выбираем как цель
+                            setPartitionMode('existing_partition');
+                            setSelectedPartitionId(part.id);
+                          }}
                           className={`p-3.5 rounded-lg border transition cursor-pointer flex items-center justify-between ${
-                            active || isMain
+                            active || (partitionMode === 'wipe_gpt' && isMain)
                               ? 'bg-[#0e292d] border-[#00d4b6]'
                               : 'bg-[#131d2a] border-[#213042]'
                           }`}
@@ -846,11 +891,23 @@ export default function App() {
                       Управление разделами
                     </button>
                     <button
-                      onClick={() => setSelectedPartitionId(3)}
+                      onClick={resetPartitionChoice}
                       className="flex-1 py-2.5 px-4 rounded-lg bg-[#15202e] hover:bg-[#1c2a3c] border border-[#00d4b6]/40 text-xs font-semibold text-[#00d4b6] transition cursor-pointer"
                     >
                       Использовать весь диск (Авто-GPT)
                     </button>
+                  </div>
+
+                  <div
+                    className={`p-3 rounded-lg border text-xs ${
+                      partitionMode === 'wipe_gpt'
+                        ? 'bg-rose-950/50 border-rose-500/40 text-rose-200'
+                        : 'bg-amber-950/40 border-amber-500/40 text-amber-200'
+                    }`}
+                  >
+                    {partitionMode === 'wipe_gpt'
+                      ? 'Режим: ПОЛНАЯ ПЕРЕРАЗМЕТКА. Все разделы и данные диска будут уничтожены.'
+                      : `Режим: установка в существующий раздел ${selectedPartitionId}. Будет отформатирован только этот раздел, остальные разделы сохранятся (на диске должен быть раздел EFI).`}
                   </div>
 
                   {showPartitionModal && generatedFiles && (
@@ -1326,7 +1383,7 @@ export default function App() {
                       <div className="flex justify-between py-1.5">
                         <span className="text-slate-400">Целевой диск:</span>
                         <span className="font-bold text-white">
-                          Диск {selectedDisk.number} ({selectedDisk.sizeGb} ГБ)
+                          Диск {selectedDisk?.number} ({selectedDisk?.sizeGb} ГБ)
                         </span>
                       </div>
                     </div>
@@ -1563,7 +1620,7 @@ export default function App() {
                     </div>
                     <h3 className="text-2xl font-extrabold text-white">
                       Установка Windows 11 ({selectedProfile.title.split('—')[0]}) на Диск{' '}
-                      {selectedDisk.number}
+                      {selectedDisk?.number}
                     </h3>
                   </div>
                   <span className="text-2xl font-mono font-bold text-[#00d4b6]">

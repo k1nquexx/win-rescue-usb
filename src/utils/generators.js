@@ -86,10 +86,37 @@ export function sanitizeDiskNumber(num) {
   return parsed;
 }
 
+// [BUG-01] Явный режим разметки: полная переразметка диска или установка в существующий раздел
+export function sanitizePartitionPlan(config) {
+  if (config.partitionMode === 'existing_partition') {
+    const id = Number(config.selectedPartitionId);
+    if (!Number.isInteger(id) || id < 1) {
+      throw new Error('Критическая ошибка: не выбран целевой раздел для установки.');
+    }
+    return { mode: 'existing_partition', partId: id };
+  }
+  return { mode: 'wipe_gpt', partId: 3 };
+}
+
 export function generateDiskpartScript(config) {
   const diskNum = sanitizeDiskNumber(config.selectedDiskNumber);
+  const plan = sanitizePartitionPlan(config);
+  if (plan.mode === 'existing_partition') {
+    return `rem ============================================================================
+rem Установка в существующий раздел (Disk ${diskNum}, Partition ${plan.partId}) — остальные разделы не затрагиваются
+rem Сгенерировано мастером Rescue USB
+rem ============================================================================
+select disk ${diskNum}
+select partition ${plan.partId}
+format quick fs=ntfs label="Windows 11"
+remove all noerr
+assign letter="W"
+list volume
+exit
+`;
+  }
   return `rem ============================================================================
-rem Автоматическая разметка накопителя (Disk ${diskNum}) — GPT / UEFI
+rem Автоматическая разметка накопителя (Disk ${diskNum}) — GPT / UEFI (ПОЛНАЯ ПЕРЕРАЗМЕТКА)
 rem Сгенерировано мастером Rescue USB
 rem ============================================================================
 select disk ${diskNum}
@@ -119,6 +146,69 @@ export function generateAutounattendXml(config) {
   );
   const safeThemeId = escapeXml(sanitizePsComment(config.themeId || 'win11').replace(/--/g, '-'));
   const diskNum = sanitizeDiskNumber(config.selectedDiskNumber);
+  const plan = sanitizePartitionPlan(config);
+  const installPartId = plan.partId;
+  // [BUG-03] Явный выбор редакции (Pro) вместо ручного выбора в Setup / случайного Home под индексом 1
+  const imageName = 'Windows 11 Pro';
+  const diskConfigXml =
+    plan.mode === 'existing_partition'
+      ? `      <DiskConfiguration>
+        <Disk wcm:action="add">
+          <DiskID>${diskNum}</DiskID>
+          <WillWipeDisk>false</WillWipeDisk>
+          <ModifyPartitions>
+            <ModifyPartition wcm:action="add">
+              <Order>1</Order>
+              <PartitionID>${plan.partId}</PartitionID>
+              <Label>Windows 11</Label>
+              <Letter>C</Letter>
+              <Format>NTFS</Format>
+            </ModifyPartition>
+          </ModifyPartitions>
+        </Disk>
+      </DiskConfiguration>`
+      : `      <DiskConfiguration>
+        <Disk wcm:action="add">
+          <DiskID>${diskNum}</DiskID>
+          <WillWipeDisk>true</WillWipeDisk>
+          <CreatePartitions>
+            <CreatePartition wcm:action="add">
+              <Order>1</Order>
+              <Type>EFI</Type>
+              <Size>300</Size>
+            </CreatePartition>
+            <CreatePartition wcm:action="add">
+              <Order>2</Order>
+              <Type>MSR</Type>
+              <Size>16</Size>
+            </CreatePartition>
+            <CreatePartition wcm:action="add">
+              <Order>3</Order>
+              <Type>Primary</Type>
+              <Extend>true</Extend>
+            </CreatePartition>
+          </CreatePartitions>
+          <ModifyPartitions>
+            <ModifyPartition wcm:action="add">
+              <Order>1</Order>
+              <PartitionID>1</PartitionID>
+              <Label>System</Label>
+              <Format>FAT32</Format>
+            </ModifyPartition>
+            <ModifyPartition wcm:action="add">
+              <Order>2</Order>
+              <PartitionID>2</PartitionID>
+            </ModifyPartition>
+            <ModifyPartition wcm:action="add">
+              <Order>3</Order>
+              <PartitionID>3</PartitionID>
+              <Label>Windows 11</Label>
+              <Letter>C</Letter>
+              <Format>NTFS</Format>
+            </ModifyPartition>
+          </ModifyPartitions>
+        </Disk>
+      </DiskConfiguration>`;
   const profile = WINDOWS_PROFILES.find((p) => p.id === config.profileId) || WINDOWS_PROFILES[2];
   const safeProfileTitle = escapeXml(profile.title.replace(/--/g, '-'));
 
@@ -161,54 +251,19 @@ export function generateAutounattendXml(config) {
         </RunSynchronousCommand>
       </RunSynchronous>
 
-      <DiskConfiguration>
-        <Disk wcm:action="add">
-          <DiskID>${diskNum}</DiskID>
-          <WillWipeDisk>true</WillWipeDisk>
-          <CreatePartitions>
-            <CreatePartition wcm:action="add">
-              <Order>1</Order>
-              <Type>EFI</Type>
-              <Size>300</Size>
-            </CreatePartition>
-            <CreatePartition wcm:action="add">
-              <Order>2</Order>
-              <Type>MSR</Type>
-              <Size>16</Size>
-            </CreatePartition>
-            <CreatePartition wcm:action="add">
-              <Order>3</Order>
-              <Type>Primary</Type>
-              <Extend>true</Extend>
-            </CreatePartition>
-          </CreatePartitions>
-          <ModifyPartitions>
-            <ModifyPartition wcm:action="add">
-              <Order>1</Order>
-              <PartitionID>1</PartitionID>
-              <Label>System</Label>
-              <Format>FAT32</Format>
-            </ModifyPartition>
-            <ModifyPartition wcm:action="add">
-              <Order>2</Order>
-              <PartitionID>2</PartitionID>
-            </ModifyPartition>
-            <ModifyPartition wcm:action="add">
-              <Order>3</Order>
-              <PartitionID>3</PartitionID>
-              <Label>Windows 11</Label>
-              <Letter>C</Letter>
-              <Format>NTFS</Format>
-            </ModifyPartition>
-          </ModifyPartitions>
-        </Disk>
-      </DiskConfiguration>
+${diskConfigXml}
 
       <ImageInstall>
         <OSImage>
+          <InstallFrom>
+            <MetaData wcm:action="add">
+              <Key>/IMAGE/NAME</Key>
+              <Value>${imageName}</Value>
+            </MetaData>
+          </InstallFrom>
           <InstallTo>
             <DiskID>${diskNum}</DiskID>
-            <PartitionID>3</PartitionID>
+            <PartitionID>${installPartId}</PartitionID>
           </InstallTo>
         </OSImage>
       </ImageInstall>
@@ -308,7 +363,10 @@ export function generatePostInstallScript(config) {
     `# Тема: ${theme.title} (${isDark ? 'Тёмная' : 'Светлая'})`,
     `# Пользователь: ${safeUser} | Заказ: ${safeOrder}`,
     `# ==============================================================================`,
-    `$ErrorActionPreference = "SilentlyContinue"`,
+    `# [ERR-01] Ошибки не подавляются глобально; ход выполнения пишется в журнал`,
+    `$ErrorActionPreference = "Continue"`,
+    `$LogPath = "$env:SystemRoot\\Temp\\RescueUSB_PostInstall.log"`,
+    `Start-Transcript -Path $LogPath -Append -ErrorAction SilentlyContinue | Out-Null`,
     ``,
     `# [V2-BUG-10] Единоразовое определение корня загрузочной флешки RescueUSB`,
     `$RescueDrive = Get-PSDrive -PSProvider FileSystem | Where-Object {`,
@@ -398,16 +456,24 @@ export function generatePostInstallScript(config) {
         ? config.cpuVendorMode
         : 'auto';
       lines.push(`# Режим оптимизации ЦП: ${mode.toUpperCase()}`);
-      if (mode === 'amd' || mode === 'auto') {
+      if (mode === 'auto') {
         lines.push(
-          `if ("${mode}" -eq "amd" -or (Get-CimInstance Win32_Processor).Manufacturer -match "AMD") {`,
+          `# [BUG-05] Единоразовый опрос WMI, берём только первый ЦП (многосокетные системы возвращают массив)`,
+          `$cpuMfg = [string]((Get-CimInstance Win32_Processor | Select-Object -First 1).Manufacturer)`
+        );
+      }
+      if (mode === 'amd' || mode === 'auto') {
+        const cond = mode === 'amd' ? '$true' : '($cpuMfg -match "AMD")';
+        lines.push(
+          `if (${cond}) {`,
           `  reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Power\\PowerSettings\\54533251-82be-4824-96c1-47b60b740d00\\0cc5b647-c1df-4637-891a-dec35c318583" /v ValueMax /t REG_DWORD /d 0 /f | Out-Null`,
           `}`
         );
       }
       if (mode === 'intel' || mode === 'auto') {
+        const cond = mode === 'intel' ? '$true' : '($cpuMfg -match "Intel")';
         lines.push(
-          `if ("${mode}" -eq "intel" -or (Get-CimInstance Win32_Processor).Manufacturer -match "Intel") {`,
+          `if (${cond}) {`,
           `  powercfg -setacvalueindex scheme_current sub_processor HETEROPOLICY 4`,
           `  powercfg -setactive scheme_current`,
           `}`
@@ -430,6 +496,19 @@ export function generatePostInstallScript(config) {
     ``,
     `Write-Host "=== [5/5] Гибридная установка выбранных программ и драйверов (Offline USB + Winget) ===" -ForegroundColor Cyan`,
     `# [V2-BUG-02] & [V3-BUG-05] Поддержка .msi через msiexec.exe, копирование портативных утилит и проверка ExitCode`,
+    `# [ERR-02] Ожидание процесса с таймаутом и принудительным завершением дерева процессов`,
+    `function Wait-RescueProcess {`,
+    `  param($Proc, [int]$TimeoutSec = 300, [string]$Name = 'пакет')`,
+    `  if (-not $Proc) { return $false }`,
+    `  $null = $Proc.Handle`,
+    `  if (-not $Proc.WaitForExit($TimeoutSec * 1000)) {`,
+    `    Write-Warning "  [!] Превышен таймаут ожидания ($TimeoutSec сек) для $Name, принудительное завершение..."`,
+    `    & taskkill.exe /PID $Proc.Id /T /F 2>&1 | Out-Null`,
+    `    return $false`,
+    `  }`,
+    `  return ($Proc.ExitCode -eq 0 -or $Proc.ExitCode -eq 3010 -or $Proc.ExitCode -eq 1641)`,
+    `}`,
+    `# [V2-BUG-02] & [V3-BUG-05] & [SEC-02] & [ERR-02] .msi через msiexec, портативные утилиты, ExitCode, Authenticode и таймауты`,
     `function Install-RescuePackage {`,
     `  param([string]$Title, [string]$WingetId, [string]$OfflineExe, [string]$OfflineArgs)`,
     `  Write-Host "Установка: $Title..." -ForegroundColor Green`,
@@ -437,39 +516,47 @@ export function generatePostInstallScript(config) {
     `  if ($OfflineExe -and $RescueUsbRoot) {`,
     `    $candidate = Join-Path -Path $RescueUsbRoot -ChildPath "RescueUSB\\Installers\\$OfflineExe"`,
     `    if (Test-Path -LiteralPath $candidate) {`,
-    `      Write-Host "  -> Найден офлайн-пакет $candidate" -ForegroundColor Cyan`,
-    `      if ($candidate -match '\\.msi$') {`,
-    `        $msiArgs = "/i \`"$candidate\`" $OfflineArgs".Trim()`,
-    `        $proc = Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArgs -Wait -PassThru`,
-    `        if ($proc -and ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010 -or $proc.ExitCode -eq 1641)) {`,
-    `          $installedOffline = $true`,
-    `        } else {`,
-    `          Write-Host "  [!] MSI-пакет завершился с кодом $($proc.ExitCode), пробуем winget..." -ForegroundColor Yellow`,
-    `        }`,
-    `      } elseif ([string]::IsNullOrWhiteSpace($OfflineArgs)) {`,
-    `        $portableDir = "$env:ProgramFiles\\RescueUSB_Tools"`,
-    `        New-Item -ItemType Directory -Path $portableDir -Force | Out-Null`,
-    `        $dstFile = Join-Path $portableDir $OfflineExe`,
-    `        Copy-Item -LiteralPath $candidate -Destination $dstFile -Force`,
-    `        if (Test-Path -LiteralPath $dstFile) {`,
-    `          $installedOffline = $true`,
-    `          Write-Host "  -> Портативная утилита скопирована в $dstFile" -ForegroundColor Cyan`,
-    `        }`,
+    `      $sig = Get-AuthenticodeSignature -LiteralPath $candidate`,
+    `      if ($sig.Status -ne 'Valid') {`,
+    `        Write-Warning "  [!] Файл $candidate не имеет доверенной цифровой подписи ($($sig.Status)). Офлайн-пакет пропущен."`,
     `      } else {`,
-    `        $proc = Start-Process -FilePath $candidate -ArgumentList $OfflineArgs -Wait -PassThru`,
-    `        if ($proc -and ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010 -or $proc.ExitCode -eq 1641)) {`,
-    `          $installedOffline = $true`,
+    `        Write-Host "  -> Найден подписанный офлайн-пакет $candidate" -ForegroundColor Cyan`,
+    `        if ($candidate -match '\\.msi$') {`,
+    `          $msiArgs = ('/i "' + $candidate + '" ' + $OfflineArgs).Trim()`,
+    `          $proc = Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArgs -PassThru`,
+    `          if (Wait-RescueProcess -Proc $proc -TimeoutSec 300 -Name $OfflineExe) {`,
+    `            $installedOffline = $true`,
+    `          } else {`,
+    `            Write-Host "  [!] MSI-пакет не установлен (код $($proc.ExitCode)), пробуем winget..." -ForegroundColor Yellow`,
+    `          }`,
+    `        } elseif ([string]::IsNullOrWhiteSpace($OfflineArgs)) {`,
+    `          $portableDir = "$env:ProgramFiles\\RescueUSB_Tools"`,
+    `          New-Item -ItemType Directory -Path $portableDir -Force | Out-Null`,
+    `          $dstFile = Join-Path $portableDir $OfflineExe`,
+    `          Copy-Item -LiteralPath $candidate -Destination $dstFile -Force`,
+    `          if (Test-Path -LiteralPath $dstFile) {`,
+    `            $installedOffline = $true`,
+    `            Write-Host "  -> Портативная утилита скопирована в $dstFile" -ForegroundColor Cyan`,
+    `          }`,
     `        } else {`,
-    `          Write-Host "  [!] Офлайн-пакет завершился с кодом $($proc.ExitCode), пробуем winget..." -ForegroundColor Yellow`,
+    `          $proc = Start-Process -FilePath $candidate -ArgumentList $OfflineArgs -PassThru`,
+    `          if (Wait-RescueProcess -Proc $proc -TimeoutSec 300 -Name $OfflineExe) {`,
+    `            $installedOffline = $true`,
+    `          } else {`,
+    `            Write-Host "  [!] Офлайн-пакет не установлен (код $($proc.ExitCode)), пробуем winget..." -ForegroundColor Yellow`,
+    `          }`,
     `        }`,
     `      }`,
     `    }`,
     `  }`,
     `  if (-not $installedOffline -and $WingetId) {`,
     `    if (Get-Command winget -ErrorAction SilentlyContinue) {`,
-    `      winget install --id "$WingetId" --silent --accept-package-agreements --accept-source-agreements`,
+    `      $wg = Start-Process -FilePath "winget" -ArgumentList @("install", "--id", $WingetId, "--silent", "--accept-package-agreements", "--accept-source-agreements") -PassThru -NoNewWindow`,
+    `      if (-not (Wait-RescueProcess -Proc $wg -TimeoutSec 600 -Name "winget $WingetId")) {`,
+    `        Write-Host "  [!] winget не завершил установку $WingetId успешно." -ForegroundColor Yellow`,
+    `      }`,
     `    } else {`,
-    `      Write-Host "  [!] Winget недоступен и офлайн-пакет $OfflineExe не установлен." -ForegroundColor Yellow`,
+    `      Write-Host "  [!] Winget недоступен и подписанный офлайн-пакет $OfflineExe не установлен." -ForegroundColor Yellow`,
     `    }`,
     `  }`,
     `}`
@@ -494,7 +581,8 @@ export function generatePostInstallScript(config) {
     ``,
     `# Перезапуск Проводника для применения темы и настроек панели задач`,
     `Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue`,
-    `Write-Host "Готово! Настройка Windows 11 успешно завершена." -ForegroundColor Green`
+    `Write-Host "Готово! Настройка Windows 11 успешно завершена." -ForegroundColor Green`,
+    `Stop-Transcript -ErrorAction SilentlyContinue | Out-Null`
   );
 
   return '\uFEFF' + lines.join('\r\n');
@@ -502,81 +590,125 @@ export function generatePostInstallScript(config) {
 
 export function generateWinPeInstallScript(config) {
   const diskNum = sanitizeDiskNumber(config.selectedDiskNumber);
-  return `\uFEFF#Requires -RunAsAdministrator
-# ==============================================================================
-# Скрипт развёртывания образа Windows 11 из среды WinPE (Флешка-спаситель)
-# ==============================================================================
-param(
-  [string]$WimPath = "",
-  [int]$ImageIndex = 1,
-  [switch]$DryRun
-)
-
-$ErrorActionPreference = "Stop"
-
-Write-Host "1. Поиск установочного образа sources\\install.wim или install.esd..." -ForegroundColor Cyan
-if (-not $WimPath) {
-  foreach ($drv in [char[]]([char]'C'..[char]'Z')) {
-    foreach ($ext in @("wim", "esd")) {
-      $candidate = "\${drv}:\\sources\\install.$ext"
-      if (Test-Path -LiteralPath $candidate) {
-        $WimPath = $candidate
-        break
-      }
-    }
-    if ($WimPath) { break }
-  }
-}
-
-if ($DryRun) {
-  Write-Host "[DRY-RUN] Симуляция разметки диска ${diskNum} и применения образа $WimPath" -ForegroundColor Yellow
-  exit 0
-}
-
-if (-not $WimPath -or -not (Test-Path -LiteralPath $WimPath)) {
-  Write-Error "Образ sources\\install.wim или install.esd не найден ни на одном носителе!"
-  exit 1
-}
-
-$diskpartScript = Join-Path $PSScriptRoot "diskpart-script.txt"
-if (-not (Test-Path -LiteralPath $diskpartScript)) {
-  throw "Сценарий разметки $diskpartScript не найден!"
-}
-
-Write-Host "2. Разметка накопителя Disk ${diskNum} через DiskPart..." -ForegroundColor Cyan
-diskpart /s "$diskpartScript"
-if ($LASTEXITCODE -ne 0) {
-  throw "Ошибка разметки диска в DiskPart (код ошибки: $LASTEXITCODE)"
-}
-
-Write-Host "3. Развёртывание образа Windows 11 ($WimPath) на раздел W: (DISM /Apply-Image)..." -ForegroundColor Cyan
-dism /Apply-Image /ImageFile:"$WimPath" /Index:$ImageIndex /ApplyDir:W:\\
-if ($LASTEXITCODE -ne 0) {
-  throw "Ошибка применения образа DISM (код ошибки: $LASTEXITCODE)"
-}
-
-Write-Host "4. Копирование конфигурации unattend.xml (specialize/oobeSystem) и скрипта пост-установки..." -ForegroundColor Cyan
-New-Item -ItemType Directory -Path "W:\\Windows\\Panther" -Force | Out-Null
-New-Item -ItemType Directory -Path "W:\\Windows\\Setup\\Scripts" -Force | Out-Null
-
-# [V2-BUG-09] Чтение через -LiteralPath и запись unattend.xml в UTF-8 без BOM
-$unattendSrc = Join-Path $PSScriptRoot "autounattend.xml"
-$rawXml = Get-Content -LiteralPath $unattendSrc -Raw -Encoding UTF8
-$cleanXml = [regex]::Replace($rawXml, '(?s)<settings pass="windowsPE">.*?</settings>', '')
-$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-[System.IO.File]::WriteAllText("W:\\Windows\\Panther\\unattend.xml", $cleanXml, $utf8NoBom)
-
-$postInstallSrc = Join-Path $PSScriptRoot "post-install-tweaks.ps1"
-Copy-Item -LiteralPath $postInstallSrc -Destination "W:\\Windows\\Setup\\Scripts\\post-install-tweaks.ps1" -Force
-
-Write-Host "5. Создание загрузчика UEFI (bcdboot)..." -ForegroundColor Cyan
-bcdboot W:\\Windows /s S: /f UEFI /l ru-ru
-if ($LASTEXITCODE -ne 0) {
-  throw "Ошибка создания загрузчика bcdboot (код ошибки: $LASTEXITCODE)"
-}
-
-Write-Host "Установка образа завершена! ПК готов к перезагрузке." -ForegroundColor Green
-`;
+  const plan = sanitizePartitionPlan(config);
+  const lines = [
+    `#Requires -RunAsAdministrator`,
+    `# ==============================================================================`,
+    `# Скрипт развёртывания образа Windows 11 из среды WinPE (Флешка-спаситель)`,
+    `# ==============================================================================`,
+    `param(`,
+    `  [string]$WimPath = "",`,
+    `  [int]$ImageIndex = 0,`,
+    `  [switch]$DryRun`,
+    `)`,
+    ``,
+    `$ErrorActionPreference = "Stop"`,
+    `$TargetDisk = ${diskNum}`,
+    `$PartitionMode = '${plan.mode}'`,
+    `$TargetPartition = ${plan.partId}`,
+    ``,
+    `function Find-InstallImage {`,
+    `  foreach ($drv in [char[]]([char]'C'..[char]'Z')) {`,
+    `    foreach ($ext in @("wim", "esd")) {`,
+    `      $candidate = "$($drv):\\sources\\install.$ext"`,
+    `      if (Test-Path -LiteralPath $candidate) { return $candidate }`,
+    `    }`,
+    `  }`,
+    `  return $null`,
+    `}`,
+    ``,
+    `# [BUG-03] Освобождаем буквы S: и W: у сторонних томов (CD-ROM, флешки, другие разделы)`,
+    `function Release-DriveLetter {`,
+    `  param([string]$Letter)`,
+    `  $vol = Get-CimInstance -ClassName Win32_Volume -Filter "DriveLetter='$($Letter):'" -ErrorAction SilentlyContinue`,
+    `  if (-not $vol) { return }`,
+    `  $free = [char[]]'ZYVUTRQPONMLKJIHGFED' | Where-Object { -not (Test-Path -LiteralPath "$($_):\\") } | Select-Object -First 1`,
+    `  if (-not $free) { throw "Нет свободной буквы диска, чтобы освободить $($Letter):" }`,
+    `  Write-Host "  Освобождаем букву $($Letter): -> $($free):" -ForegroundColor DarkGray`,
+    `  Set-CimInstance -InputObject $vol -Property @{ DriveLetter = "$($free):" }`,
+    `}`,
+    ``,
+    `Write-Host "1. Поиск установочного образа sources\\install.wim или install.esd..." -ForegroundColor Cyan`,
+    `if (-not $WimPath) { $WimPath = Find-InstallImage }`,
+    ``,
+    `if ($DryRun) {`,
+    `  Write-Host "[DRY-RUN] Режим $($PartitionMode): разметка диска $($TargetDisk) (раздел $($TargetPartition)) и применение образа $($WimPath)" -ForegroundColor Yellow`,
+    `  exit 0`,
+    `}`,
+    ``,
+    `if (-not $WimPath -or -not (Test-Path -LiteralPath $WimPath)) {`,
+    `  Write-Error "Образ sources\\install.wim или install.esd не найден ни на одном носителе!"`,
+    `  exit 1`,
+    `}`,
+    ``,
+    `# [BUG-03] Автовыбор редакции Pro (индекс 1 на мультиредакционных ISO — Home). Выполняется ДО стирания диска.`,
+    `if ($ImageIndex -le 0) {`,
+    `  $images = @(Get-WindowsImage -ImagePath $WimPath)`,
+    `  $pro = $images | Where-Object { $_.ImageName -eq 'Windows 11 Pro' } | Select-Object -First 1`,
+    `  if (-not $pro) { $pro = $images | Where-Object { $_.ImageName -match '\\bPro$' } | Select-Object -First 1 }`,
+    `  if ($pro) {`,
+    `    $ImageIndex = [int]$pro.ImageIndex`,
+    `  } else {`,
+    `    $ImageIndex = 1`,
+    `    Write-Warning "Редакция Windows 11 Pro не найдена в образе, используется индекс 1."`,
+    `  }`,
+    `  Write-Host "Выбран индекс образа: $ImageIndex" -ForegroundColor Cyan`,
+    `}`,
+    ``,
+    `$diskpartScript = Join-Path $PSScriptRoot "diskpart-script.txt"`,
+    `if (-not (Test-Path -LiteralPath $diskpartScript)) {`,
+    `  throw "Сценарий разметки $diskpartScript не найден!"`,
+    `}`,
+    ``,
+    `Write-Host "2. Подготовка букв дисков и разметка накопителя Disk $TargetDisk через DiskPart ($PartitionMode)..." -ForegroundColor Cyan`,
+    `Release-DriveLetter -Letter 'S'`,
+    `Release-DriveLetter -Letter 'W'`,
+    `diskpart /s "$diskpartScript"`,
+    `if ($LASTEXITCODE -ne 0) {`,
+    `  throw "Ошибка разметки диска в DiskPart (код ошибки: $LASTEXITCODE)"`,
+    `}`,
+    ``,
+    `# Буквы томов могли измениться после разметки — перепроверяем путь к образу`,
+    `if (-not (Test-Path -LiteralPath $WimPath)) {`,
+    `  $WimPath = Find-InstallImage`,
+    `  if (-not $WimPath) { throw "После разметки установочный образ не найден." }`,
+    `}`,
+    ``,
+    `if ($PartitionMode -eq 'existing_partition') {`,
+    `  $esp = Get-Partition -DiskNumber $TargetDisk | Where-Object { $_.GptType -eq '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' } | Select-Object -First 1`,
+    `  if (-not $esp) { throw "На диске $TargetDisk не найден раздел EFI для установки загрузчика." }`,
+    `  Add-PartitionAccessPath -DiskNumber $TargetDisk -PartitionNumber $esp.PartitionNumber -AccessPath "S:"`,
+    `}`,
+    ``,
+    `Write-Host "3. Развёртывание образа Windows 11 ($WimPath) на раздел W: (DISM /Apply-Image)..." -ForegroundColor Cyan`,
+    `dism /Apply-Image /ImageFile:"$WimPath" /Index:$ImageIndex /ApplyDir:W:\\`,
+    `if ($LASTEXITCODE -ne 0) {`,
+    `  throw "Ошибка применения образа DISM (код ошибки: $LASTEXITCODE)"`,
+    `}`,
+    ``,
+    `Write-Host "4. Копирование конфигурации unattend.xml (specialize/oobeSystem) и скрипта пост-установки..." -ForegroundColor Cyan`,
+    `New-Item -ItemType Directory -Path "W:\\Windows\\Panther" -Force | Out-Null`,
+    `New-Item -ItemType Directory -Path "W:\\Windows\\Setup\\Scripts" -Force | Out-Null`,
+    ``,
+    `# [V2-BUG-09] Чтение через -LiteralPath и запись unattend.xml в UTF-8 без BOM`,
+    `$unattendSrc = Join-Path $PSScriptRoot "autounattend.xml"`,
+    `$rawXml = Get-Content -LiteralPath $unattendSrc -Raw -Encoding UTF8`,
+    `$cleanXml = [regex]::Replace($rawXml, '(?s)<settings pass="windowsPE">.*?</settings>', '')`,
+    `$utf8NoBom = New-Object System.Text.UTF8Encoding($false)`,
+    `[System.IO.File]::WriteAllText("W:\\Windows\\Panther\\unattend.xml", $cleanXml, $utf8NoBom)`,
+    ``,
+    `$postInstallSrc = Join-Path $PSScriptRoot "post-install-tweaks.ps1"`,
+    `Copy-Item -LiteralPath $postInstallSrc -Destination "W:\\Windows\\Setup\\Scripts\\post-install-tweaks.ps1" -Force`,
+    ``,
+    `Write-Host "5. Создание загрузчика UEFI (bcdboot)..." -ForegroundColor Cyan`,
+    `bcdboot W:\\Windows /s S: /f UEFI /l ru-ru`,
+    `if ($LASTEXITCODE -ne 0) {`,
+    `  throw "Ошибка создания загрузчика bcdboot (код ошибки: $LASTEXITCODE)"`,
+    `}`,
+    ``,
+    `Write-Host "Установка образа завершена! ПК готов к перезагрузке." -ForegroundColor Green`,
+  ];
+  return '\uFEFF' + lines.join('\r\n');
 }
 
 // [V2-BUG-08] & [V3-BUG-01] Include chcp 65001 >nul and /wait flag so WinPE does not prematurely reboot
@@ -589,7 +721,7 @@ echo Поиск накопителя Rescue USB...
 for %%d in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
   if exist "%%d:\\RescueUSB\\win-rescue-usb.exe" (
     echo Запуск графического мастера с диска %%d:...
-    start "" /wait "%%d:\\RescueUSB\\win-rescue-usb.exe" --no-sandbox --disable-gpu
+    start "" /wait "%%d:\\RescueUSB\\win-rescue-usb.exe" --winpe --no-sandbox --disable-gpu
     exit /b 0
   )
 )
