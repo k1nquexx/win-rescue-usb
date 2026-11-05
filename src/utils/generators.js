@@ -592,7 +592,6 @@ export function generateWinPeInstallScript(config) {
   const diskNum = sanitizeDiskNumber(config.selectedDiskNumber);
   const plan = sanitizePartitionPlan(config);
   const lines = [
-    `#Requires -RunAsAdministrator`,
     `# ==============================================================================`,
     `# Скрипт развёртывания образа Windows 11 из среды WinPE (Флешка-спаситель)`,
     `# ==============================================================================`,
@@ -632,8 +631,14 @@ export function generateWinPeInstallScript(config) {
     `if (-not $WimPath) { $WimPath = Find-InstallImage }`,
     ``,
     `if ($DryRun) {`,
-    `  Write-Host "[DRY-RUN] Режим $($PartitionMode): разметка диска $($TargetDisk) (раздел $($TargetPartition)) и применение образа $($WimPath)" -ForegroundColor Yellow`,
+    `  $imgDisplay = if ($WimPath) { $WimPath } else { "<образ будет найден в WinPE: sources\\install.wim>" }`,
+    `  Write-Host "[DRY-RUN] Режим $($PartitionMode): разметка диска $($TargetDisk) (раздел $($TargetPartition)) и применение образа $imgDisplay" -ForegroundColor Yellow`,
     `  exit 0`,
+    `}`,
+    ``,
+    `$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)`,
+    `if (-not $isAdmin) {`,
+    `  throw "Для выполнения разметки и развёртывания образа требуются права Администратора."`,
     `}`,
     ``,
     `if (-not $WimPath -or -not (Test-Path -LiteralPath $WimPath)) {`,

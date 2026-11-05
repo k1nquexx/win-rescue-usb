@@ -1,6 +1,7 @@
 {
   "name": "win-rescue-usb",
   "version": "1.0.0",
+  "author": "Fosters PC",
   "type": "module",
   "description": "Кастомный мастер установки и оптимизации Windows 11 для загрузочной флешки (WinPE + FirstLogon Tweaker)",
   "main": "electron/main.cjs",
@@ -15,6 +16,11 @@
   "build": {
     "appId": "com.rescueusb.installer",
     "productName": "win-rescue-usb",
+    "asar": true,
+    "asarUnpack": [
+      "src/**/*",
+      "assets/**/*"
+    ],
     "directories": {
       "output": "release"
     },
@@ -31,7 +37,8 @@
       "target": [
         "portable"
       ],
-      "artifactName": "win-rescue-usb.exe"
+      "artifactName": "win-rescue-usb.exe",
+      "signAndEditExecutable": false
     }
   },
   "dependencies": {

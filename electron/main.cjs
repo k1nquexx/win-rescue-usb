@@ -35,9 +35,31 @@ try {
 
 const titleSuffix = branding.windowTitleSuffix || 'Rescue USB Installer';
 
+// Корректное определение рабочей директории как в dev-режиме, так и в упакованном portable .exe / win-unpacked
+function getWorkspaceRoot() {
+  if (app.isPackaged) {
+    const portableDir = process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(process.execPath);
+    for (const candidate of [
+      process.cwd(),
+      path.resolve(portableDir, '..'),
+      path.resolve(portableDir, '..', '..'),
+    ]) {
+      if (
+        fs.existsSync(path.join(candidate, 'package.json')) &&
+        fs.existsSync(path.join(candidate, 'scripts', 'inject-boot-wim.ps1'))
+      ) {
+        return candidate;
+      }
+    }
+    return portableDir;
+  }
+  return path.resolve(__dirname, '..');
+}
+
 let mainWindow = null;
-let lastExportedDir = path.resolve(__dirname, '..', 'usb-export');
+let lastExportedDir = path.resolve(getWorkspaceRoot(), 'usb-export');
 let isExportInProgress = false;
+let cachedPhysicalDisks = [];
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -80,7 +102,65 @@ function createWindow() {
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // Автоматический предрелизный Smoke-Test собранного бинарника (--smoke-test-export)
+  if (process.argv.includes('--smoke-test-export')) {
+    try {
+      const diskRes = await queryDisks();
+      if (!diskRes.ok || !diskRes.disks.length) {
+        console.error('[SMOKE-ERR] queryDisks failed:', diskRes.error);
+        app.exit(1);
+        return;
+      }
+      const writableDisk = diskRes.disks.find((d) => !d.isUsb && !d.isReadOnly && !d.isOffline);
+      if (!writableDisk) {
+        console.error('[SMOKE-ERR] No writable internal disk found');
+        app.exit(1);
+        return;
+      }
+      const expRes = await performExportUsbBundle({
+        askFolder: false,
+        config: {
+          brandName: 'Fosters PC',
+          orderNumber: 'SMOKE-01',
+          profileId: 'gaming',
+          themeId: 'win11',
+          colorMode: 'dark',
+          selectedDiskNumber: writableDisk.number,
+          partitionMode: 'wipe_gpt',
+          selectedPartitionId: null,
+          selectedItems: ['chrome', '7zip', 'steam', 'vcredist', 'directx', 'high_performance_power'],
+          cpuVendorMode: 'auto',
+          username: 'Fosters',
+          selectedUserSettings: ['show_ext', 'disable_bing'],
+        },
+      });
+      if (!expRes.ok) {
+        console.error('[SMOKE-ERR] performExportUsbBundle failed:', expRes.error);
+        app.exit(1);
+        return;
+      }
+      console.log(
+        JSON.stringify({
+          smokeOk: true,
+          detectedDisks: diskRes.disks.map((d) => ({
+            number: d.number,
+            model: d.model,
+            sizeGb: d.sizeGb,
+            partitions: d.partitions.length,
+          })),
+          exportedTo: expRes.targetDir,
+        })
+      );
+      app.exit(0);
+      return;
+    } catch (err) {
+      console.error('[SMOKE-ERR]', err);
+      app.exit(1);
+      return;
+    }
+  }
+
   // [SEC-05] Content-Security-Policy на уровне сессии для dev и production
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     const policy = isDev
@@ -196,6 +276,7 @@ function queryDisks() {
               partitions,
             };
           });
+          cachedPhysicalDisks = mapped;
           resolve({ ok: true, disks: mapped });
         } catch (parseErr) {
           console.error('[get-disks] JSON parse error:', parseErr);
@@ -263,12 +344,22 @@ function isForbiddenExportDir(targetDir, appRootDir) {
   return forbiddenPrefixes.some((p) => t === p || t.startsWith(p + path.sep));
 }
 
+// Разрешение пути с учётом распакованных файлов из app.asar.unpacked (для ESM import и бинарных ассетов)
+function resolveUnpackedPath(...segments) {
+  const candidate = path.join(__dirname, '..', ...segments);
+  const unpacked = candidate.replace(/app\.asar([\\/])/i, 'app.asar.unpacked$1');
+  if (candidate !== unpacked && fs.existsSync(unpacked)) {
+    return unpacked;
+  }
+  return candidate;
+}
+
 // [SEC-02] Скрипты генерируются в Main Process из структурированного DTO конфигурации
 // [ERR-04] Отклонённый промис не кэшируется: при сбое импорта кэш сбрасывается
 let generatorsModulePromise = null;
 function loadGenerators() {
   if (!generatorsModulePromise) {
-    const file = path.join(__dirname, '..', 'src', 'utils', 'generators.js');
+    const file = resolveUnpackedPath('src', 'utils', 'generators.js');
     generatorsModulePromise = import(pathToFileURL(file).href).catch((err) => {
       generatorsModulePromise = null;
       throw err;
@@ -306,7 +397,7 @@ const pathExists = (p) =>
   );
 
 // [V2-SEC-01], [V3-BUG-07], [SEC-01..03], [RES-02], [ERR-03], [PERF-01], [PERF-02]
-ipcMain.handle('export-usb-bundle', async (_event, payload) => {
+async function performExportUsbBundle(payload) {
   if (isExportInProgress) {
     return { ok: false, error: 'Экспорт уже выполняется, подождите завершения операции.' };
   }
@@ -318,7 +409,7 @@ ipcMain.handle('export-usb-bundle', async (_event, payload) => {
       return { ok: false, error: 'Некорректные данные конфигурации для экспорта' };
     }
 
-    const appRootDir = path.resolve(__dirname, '..');
+    const appRootDir = getWorkspaceRoot();
     let targetDir = path.resolve(appRootDir, 'usb-export');
 
     if (payload.askFolder === true && mainWindow) {
@@ -353,7 +444,8 @@ ipcMain.handle('export-usb-bundle', async (_event, payload) => {
     ) {
       return { ok: false, error: 'Целевой диск для развертывания не выбран.' };
     }
-    const diskQuery = await queryDisks();
+    const diskQuery =
+      cachedPhysicalDisks.length > 0 ? { ok: true, disks: cachedPhysicalDisks } : await queryDisks();
     if (!diskQuery.ok) {
       return {
         ok: false,
@@ -431,7 +523,7 @@ ipcMain.handle('export-usb-bundle', async (_event, payload) => {
       '2. Поместите распакованные INF-драйверы LAN/Wi-Fi в папку $WinPEDriver$\\LAN_WiFi\\ или RescueUSB\\Drivers\\.',
     ].join('\r\n');
 
-    const assetsThemesDir = path.join(__dirname, '..', 'assets', 'themes');
+    const assetsThemesDir = resolveUnpackedPath('assets', 'themes');
 
     // Список записей: [путь назначения, содержимое строкой | { copyFrom }]
     const jobs = [
@@ -488,7 +580,9 @@ ipcMain.handle('export-usb-bundle', async (_event, payload) => {
   } finally {
     isExportInProgress = false;
   }
-});
+}
+
+ipcMain.handle('export-usb-bundle', (_event, payload) => performExportUsbBundle(payload));
 
 // [SEC-03] Safely open only the verified lastExportedDir directory
 ipcMain.handle('open-export-folder', async () => {
