@@ -30,7 +30,7 @@ export default function App() {
 
   // Branding & Order (Section 4.1 & [BUG-08])
   const [brandName, setBrandName] = useState(defaultBranding.brandName || 'Fosters PC');
-  const [tagline, setTagline] = useState(defaultBranding.tagline || 'GAME RELIGION');
+  const [tagline] = useState(defaultBranding.tagline || 'GAME RELIGION');
   const [orderNumber, setOrderNumber] = useState('');
 
   // Step 2: Version & Theme
@@ -86,7 +86,7 @@ export default function App() {
     window.rescueApi?.setWindowTitle?.(effectiveBrand);
   }, [brandName]);
 
-  // [BUG-02] Load real physical disks and default to the first non-USB drive
+  // [BUG-02] & [V2-BUG-07] Load real physical disks and default to the first writable non-USB drive
   const refreshDisks = async () => {
     setLoadingDisks(true);
     try {
@@ -94,7 +94,8 @@ export default function App() {
         const res = await window.rescueApi.getDisks();
         if (res?.ok && Array.isArray(res.disks) && res.disks.length > 0) {
           setDisks(res.disks);
-          const firstInternal = res.disks.find((d) => !d.isUsb) || res.disks[0];
+          const firstInternal =
+            res.disks.find((d) => !d.isUsb && !d.isReadOnly && !d.isOffline) || res.disks[0];
           setSelectedDiskNumber(firstInternal.number);
         }
       }
@@ -133,6 +134,17 @@ export default function App() {
 
   const effectiveBrandName = brandName.trim() || defaultBranding.brandName || 'Fosters PC';
 
+  const selectedDisk =
+    disks.find((d) => d.number === selectedDiskNumber) ||
+    disks.find((d) => !d.isUsb && !d.isReadOnly && !d.isOffline) ||
+    disks[0] ||
+    FALLBACK_DISKS[0];
+
+  // [V2-BUG-03] & [V2-BUG-07] Block proceeding to final steps if target disk is USB, ReadOnly, or Offline
+  const canProceedToInstall = Boolean(
+    selectedDisk && !selectedDisk.isUsb && !selectedDisk.isReadOnly && !selectedDisk.isOffline
+  );
+
   // Config bundle for generators
   const fullConfig = useMemo(
     () => ({
@@ -141,7 +153,7 @@ export default function App() {
       profileId,
       themeId,
       colorMode,
-      selectedDiskNumber,
+      selectedDiskNumber: selectedDisk?.number ?? 0,
       selectedItems,
       cpuVendorMode,
       username,
@@ -153,7 +165,7 @@ export default function App() {
       profileId,
       themeId,
       colorMode,
-      selectedDiskNumber,
+      selectedDisk?.number,
       selectedItems,
       cpuVendorMode,
       username,
@@ -168,8 +180,16 @@ export default function App() {
     return buildGeneratedFiles(fullConfig);
   }, [fullConfig, shouldComputePreview]);
 
-  // [BUG-03] & [ERR-04] Async export with cancel handling and boolean return status
+  // [BUG-03], [ERR-04], [V2-BUG-03] Async export with USB disk guard, cancel handling, and boolean return
   const handleExportBundle = async (askFolder = false) => {
+    if (!canProceedToInstall) {
+      setExportStatus({
+        ok: false,
+        error:
+          'Выбранный накопитель недоступен для установки ОС (USB-флешка / Только чтение / Офлайн). Выберите внутренний диск на шаге 03.',
+      });
+      return false;
+    }
     try {
       const filesToExport = generatedFiles || buildGeneratedFiles(fullConfig);
       if (window.rescueApi?.exportUsbBundle) {
@@ -259,11 +279,6 @@ export default function App() {
     settingsPage * SETTINGS_PER_PAGE
   );
 
-  const selectedDisk =
-    disks.find((d) => d.number === selectedDiskNumber) ||
-    disks.find((d) => !d.isUsb) ||
-    disks[0] ||
-    FALLBACK_DISKS[0];
   const selectedTheme =
     WINDOWS_THEMES.find((t) => t.id === themeId) || WINDOWS_THEMES[0];
   const selectedProfile =
@@ -296,7 +311,14 @@ export default function App() {
             return (
               <button
                 key={step.id}
-                onClick={() => setCurrentStep(step.id)}
+                onClick={() => {
+                  // [V2-BUG-03] Prevent jumping to Steps 6-8 if no valid non-USB disk is selected
+                  if (step.id >= 6 && !canProceedToInstall) {
+                    setCurrentStep(3);
+                    return;
+                  }
+                  setCurrentStep(step.id);
+                }}
                 className={`group relative py-2 px-2.5 text-left transition-colors cursor-pointer ${
                   isActive
                     ? 'text-white'
@@ -623,26 +645,27 @@ export default function App() {
                 Куда установить Windows?
               </h2>
               <p className="text-sm text-slate-400 mt-1 mb-6">
-                Выберите накопитель слева. Справа показаны его разделы. Загрузочная USB-флешка
-                автоматически защищена от случайного форматирования.
+                Выберите накопитель слева. Справа показаны его разделы. Загрузочная USB-флешка и
+                диски «Только чтение» автоматически защищены от случайного форматирования.
               </p>
 
               <div className="grid grid-cols-12 gap-8 items-start">
                 {/* Left 5 cols: Disks list */}
                 <div className="col-span-5 flex flex-col justify-between space-y-3">
                   {disks.map((d) => {
-                    const active = d.number === selectedDisk.number && !d.isUsb;
+                    const isBlocked = Boolean(d.isUsb || d.isReadOnly || d.isOffline);
+                    const active = d.number === selectedDisk.number && !isBlocked;
                     return (
                       <div
                         key={d.number}
                         onClick={() => {
-                          // [BUG-02] Prevent selecting the bootable USB drive for OS installation/wipe
-                          if (d.isUsb) return;
+                          // [BUG-02] & [V2-BUG-07] Prevent selecting USB, ReadOnly, or Offline disks
+                          if (isBlocked) return;
                           setSelectedDiskNumber(d.number);
                           setSelectedPartitionId(3);
                         }}
                         className={`p-4 rounded-xl border transition ${
-                          d.isUsb
+                          isBlocked
                             ? 'bg-[#12161f]/80 border-rose-900/40 opacity-80 cursor-not-allowed'
                             : active
                             ? 'bg-[#0e292d] border-[#00d4b6] shadow-[0_0_20px_rgba(0,212,182,0.15)] cursor-pointer'
@@ -663,11 +686,16 @@ export default function App() {
                               ЗАЩИТА ФЛЕШКИ
                             </span>
                           )}
+                          {!d.isUsb && (d.isReadOnly || d.isOffline) && (
+                            <span className="text-[10px] px-2 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-700/50 font-bold">
+                              {d.isReadOnly ? 'ТОЛЬКО ЧТЕНИЕ' : 'ОФЛАЙН'}
+                            </span>
+                          )}
                         </div>
-                        {/* [BUG-08] Accurate disk type label (Системный диск vs Чистый диск vs Флешка) */}
+                        {/* [BUG-08] Accurate disk type label */}
                         <div
                           className={`text-xs font-mono ${
-                            d.isUsb
+                            isBlocked
                               ? 'text-rose-400 font-semibold'
                               : d.isSystem
                               ? 'text-amber-300'
@@ -710,6 +738,13 @@ export default function App() {
                     ДИСК {selectedDisk.number} · {selectedDisk.model}
                   </div>
 
+                  {!canProceedToInstall && (
+                    <div className="p-3 rounded-lg bg-rose-950/60 border border-rose-500/40 text-xs text-rose-200">
+                      Внимание: выбранный накопитель не может использоваться для установки ОС.
+                      Подключите или выберите внутренний накопитель (SSD / HDD).
+                    </div>
+                  )}
+
                   <div className="space-y-2.5">
                     {selectedDisk.partitions.map((part) => {
                       const isMain = part.type === 'основной';
@@ -744,7 +779,7 @@ export default function App() {
                     })}
                   </div>
 
-                  {/* Partition Controls Bar (as shown at 0:37 in video) */}
+                  {/* Partition Controls Bar */}
                   <div className="pt-3 flex items-center justify-between gap-3">
                     <button
                       onClick={() => setShowPartitionModal((v) => !v)}
@@ -784,7 +819,7 @@ export default function App() {
               </button>
               <button
                 onClick={() => setCurrentStep(4)}
-                disabled={selectedDisk?.isUsb}
+                disabled={!canProceedToInstall}
                 className="px-8 py-3 rounded-lg bg-[#00d4b6] hover:bg-[#00e6c5] disabled:opacity-40 text-slate-950 font-bold text-sm shadow-[0_0_20px_rgba(0,212,182,0.3)] cursor-pointer"
               >
                 Далее
@@ -1127,7 +1162,13 @@ export default function App() {
                 Назад
               </button>
               <button
-                onClick={() => setCurrentStep(6)}
+                onClick={() => {
+                  if (!canProceedToInstall) {
+                    setCurrentStep(3);
+                    return;
+                  }
+                  setCurrentStep(6);
+                }}
                 className="px-8 py-3 rounded-lg bg-[#00d4b6] hover:bg-[#00e6c5] text-slate-950 font-bold text-sm shadow-[0_0_20px_rgba(0,212,182,0.3)] cursor-pointer"
               >
                 Далее
@@ -1336,7 +1377,8 @@ export default function App() {
                   const ok = await handleExportBundle(false);
                   if (ok) setCurrentStep(7);
                 }}
-                className="px-8 py-3 rounded-lg bg-[#00d4b6] hover:bg-[#00e6c5] text-slate-950 font-bold text-sm shadow-[0_0_20px_rgba(0,212,182,0.3)] flex items-center gap-2 cursor-pointer"
+                disabled={!canProceedToInstall}
+                className="px-8 py-3 rounded-lg bg-[#00d4b6] hover:bg-[#00e6c5] disabled:opacity-40 text-slate-950 font-bold text-sm shadow-[0_0_20px_rgba(0,212,182,0.3)] flex items-center gap-2 cursor-pointer"
               >
                 <Play className="w-4 h-4 fill-current" />
                 Начать установку

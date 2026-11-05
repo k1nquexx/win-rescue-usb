@@ -3,13 +3,29 @@ const path = require('path');
 const fs = require('fs');
 const { execFile } = require('child_process');
 
+// [V2-ARCH-01] Read default branding configuration from src/data/branding.json
+let branding = {
+  brandName: 'Fosters PC',
+  windowTitleSuffix: 'Rescue USB Installer',
+};
+try {
+  const brandingPath = path.join(__dirname, '..', 'src', 'data', 'branding.json');
+  if (fs.existsSync(brandingPath)) {
+    branding = { ...branding, ...JSON.parse(fs.readFileSync(brandingPath, 'utf8')) };
+  }
+} catch (_err) {
+  // Fallback defaults remain active
+}
+
+const titleSuffix = branding.windowTitleSuffix || 'Rescue USB Installer';
+
 let mainWindow = null;
 let lastExportedDir = path.resolve(__dirname, '..', 'usb-export');
 
-// Helper: Generate a compact valid 24-bit BMP image buffer (64x36 gradient) for theme wallpapers
+// [V2-PERF-01] Generate a 320x180 Top-Down 24-bit BMP image buffer (negative height = Top-Down DIB)
 function createGradientBmpBuffer(r1, g1, b1, r2, g2, b2) {
-  const width = 64;
-  const height = 36;
+  const width = 320;
+  const height = 180;
   const rowSize = Math.ceil((width * 3) / 4) * 4;
   const pixelArraySize = rowSize * height;
   const fileSize = 54 + pixelArraySize;
@@ -24,7 +40,7 @@ function createGradientBmpBuffer(r1, g1, b1, r2, g2, b2) {
   // BITMAPINFOHEADER (40 bytes)
   buf.writeUInt32LE(40, 14);
   buf.writeInt32LE(width, 18);
-  buf.writeInt32LE(height, 22);
+  buf.writeInt32LE(-height, 22); // Negative height = Top-Down DIB (no vertical inversion)
   buf.writeUInt16LE(1, 26);
   buf.writeUInt16LE(24, 28);
   buf.writeUInt32LE(0, 30);
@@ -59,7 +75,7 @@ function createWindow() {
     minHeight: 700,
     backgroundColor: '#0b1017',
     autoHideMenuBar: true,
-    title: 'Fosters PC — Rescue USB Installer',
+    title: `${branding.brandName || 'Fosters PC'} — ${titleSuffix}`,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -104,13 +120,13 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-// [ERR-03] & [BUG-08] Query real physical disks via PowerShell Get-Disk with UTF-8 encoding
+// [V2-BUG-07] Query real physical disks sorted by Number, including IsReadOnly & IsOffline
 ipcMain.handle('get-disks', async () => {
   return new Promise((resolve) => {
     const psScript = `
       [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
       $ErrorActionPreference = 'Stop'
-      $disks = Get-Disk | Select-Object Number, FriendlyName, BusType, PartitionStyle, @{Name='SizeGb';Expression={[math]::Round($_.Size / 1GB, 1)}}, IsSystem, IsBoot
+      $disks = Get-Disk | Sort-Object Number | Select-Object Number, FriendlyName, BusType, PartitionStyle, @{Name='SizeGb';Expression={[math]::Round($_.Size / 1GB, 1)}}, IsSystem, IsBoot, IsReadOnly, IsOffline
       $disks | ConvertTo-Json -Compress
     `;
     execFile(
@@ -132,6 +148,8 @@ ipcMain.handle('get-disks', async () => {
             const sizeGb =
               Number.isFinite(parsedSize) && parsedSize > 0 ? parsedSize : 0;
             const isUsb = String(d.BusType || '').toUpperCase().includes('USB');
+            const isReadOnly = Boolean(d.IsReadOnly);
+            const isOffline = Boolean(d.IsOffline);
             const mainSize = Math.max(0, +(sizeGb - 0.32).toFixed(1));
             return {
               number: d.Number ?? 0,
@@ -142,6 +160,8 @@ ipcMain.handle('get-disks', async () => {
               freeGb: sizeGb,
               isUsb,
               isSystem: Boolean(d.IsSystem || d.IsBoot),
+              isReadOnly,
+              isOffline,
               partitions: isUsb
                 ? [
                     {
@@ -191,11 +211,15 @@ ipcMain.handle('get-disks', async () => {
   });
 });
 
-// [BUG-03] & [PERF-01] Export generated files asynchronously with cancel handling & offline folders
+// [V2-SEC-01] Export generated files asynchronously with payload & system root validation
 ipcMain.handle('export-usb-bundle', async (_event, payload) => {
   try {
+    if (!payload || typeof payload !== 'object') {
+      return { ok: false, error: 'Некорректные данные конфигурации для экспорта' };
+    }
+
     let targetDir = path.resolve(__dirname, '..', 'usb-export');
-    if (payload?.askFolder && mainWindow) {
+    if (payload.askFolder && mainWindow) {
       const result = await dialog.showOpenDialog(mainWindow, {
         title: 'Выберите флешку или папку для экспорта комплекта Rescue USB',
         properties: ['openDirectory', 'createDirectory'],
@@ -208,6 +232,19 @@ ipcMain.handle('export-usb-bundle', async (_event, payload) => {
         };
       }
       targetDir = path.resolve(result.filePaths[0]);
+    }
+
+    const sysDriveRoot = path.resolve(process.env.SystemDrive || 'C:', '\\');
+    const sysRootDir = path.resolve(process.env.SystemRoot || 'C:\\Windows');
+    if (
+      targetDir.toLowerCase() === sysDriveRoot.toLowerCase() ||
+      targetDir.toLowerCase().startsWith(sysRootDir.toLowerCase())
+    ) {
+      return {
+        ok: false,
+        error:
+          'Запрещена запись комплекта в корень системного диска C:\\ или папку Windows. Выберите USB-накопитель или отдельную подпапку.',
+      };
     }
 
     lastExportedDir = targetDir;
@@ -277,7 +314,7 @@ ipcMain.handle('export-usb-bundle', async (_event, payload) => {
         String(payload.postInstallScript || ''),
         'utf8'
       ),
-      // Generate theme wallpaper BMP files so gaming/classic themes have real wallpapers to apply
+      // Generate 320x180 Top-Down BMP theme wallpaper files
       fs.promises.writeFile(
         path.join(themesSubdir, 'win11.bmp'),
         createGradientBmpBuffer(10, 35, 90, 0, 120, 212)
@@ -320,14 +357,16 @@ ipcMain.handle('open-export-folder', async () => {
   }
 });
 
-// Section 4.1: Update window title dynamically when brand name changes
+// [V2-ARCH-01] Update window title dynamically using branding.windowTitleSuffix
 ipcMain.handle('set-window-title', (_event, rawBrand) => {
   if (mainWindow && !mainWindow.isDestroyed()) {
-    const cleanBrand = String(rawBrand || 'Fosters PC')
+    const cleanBrand = String(rawBrand || branding.brandName || 'Fosters PC')
       .replace(/[\r\n\0]/g, '')
       .trim()
       .slice(0, 50);
-    mainWindow.setTitle(`${cleanBrand || 'Fosters PC'} — Rescue USB Installer`);
+    mainWindow.setTitle(
+      `${cleanBrand || branding.brandName || 'Fosters PC'} — ${titleSuffix}`
+    );
   }
   return { ok: true };
 });

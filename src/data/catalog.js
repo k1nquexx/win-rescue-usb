@@ -232,7 +232,7 @@ export const CATALOG_ITEMS = {
       shortDesc: 'Компоненты среды выполнения .NET Framework 2.0 / 3.0 / 3.5.',
       fullDesc: 'Компоненты Microsoft .NET Framework 3.5 необходимы для запуска классических игр и специализированного софта, созданного для Windows 7/8/10. Устанавливается через DISM с установочного носителя или Центра обновления.',
       command:
-        '$sxsDrive = Get-PSDrive -PSProvider FileSystem | Where-Object { Test-Path (Join-Path $_.Root "sources\\sxs") } | Select-Object -First 1; if ($sxsDrive) { DISM /Online /Enable-Feature /FeatureName:NetFx3 /All /LimitAccess /Source:"$($sxsDrive.Root)sources\\sxs" /NoRestart } else { DISM /Online /Enable-Feature /FeatureName:NetFx3 /All /NoRestart }',
+        'if ($RescueUsbRoot -and (Test-Path -LiteralPath (Join-Path $RescueUsbRoot "sources\\sxs"))) { DISM /Online /Enable-Feature /FeatureName:NetFx3 /All /LimitAccess /Source:"$(Join-Path $RescueUsbRoot \'sources\\sxs\')" /NoRestart } else { DISM /Online /Enable-Feature /FeatureName:NetFx3 /All /NoRestart }',
       defaultSelected: true,
     },
     {
@@ -277,7 +277,7 @@ export const CATALOG_ITEMS = {
       badge: 'OC',
       badgeColor: 'bg-red-600 text-white',
       shortDesc: 'Стресс-тестирование и мониторинг температур ПК.',
-      fullDesc: 'Профессиональная утилита для проверки стабильности процессора, оперативной памяти, видеокарты и блока питания, а также мониторинга частот, напряжений и температур.',
+      fullDesc: 'Профессиональная портативная утилита для проверки стабильности процессора, оперативной памяти, видеокарты и блока питания. При наличии на флешке копируется в Program Files\\RescueUSB_Tools без блокировки установки.',
       wingetId: 'OCCT.OCCT',
       offlineInstaller: 'OCCT.exe',
       offlineArgs: '',
@@ -291,7 +291,7 @@ export const CATALOG_ITEMS = {
       shortDesc: 'Проверка статуса лицензии и запуск скрипта при первом входе.',
       fullDesc: 'Проверяет статус цифровой лицензии Windows 11 через slmgr.vbs /xpr и при наличии локального скрипта MAS_AIO.cmd на флешке выполняет автоматическую проверку активации.',
       command:
-        'cscript //nologo "$env:SystemRoot\\System32\\slmgr.vbs" /xpr; Get-PSDrive -PSProvider FileSystem | ForEach-Object { $mas = Join-Path $_.Root "RescueUSB\\Installers\\MAS_AIO.cmd"; if (Test-Path $mas) { Start-Process -FilePath $mas -ArgumentList "/HWID" -Wait -WindowStyle Hidden } }',
+        'cscript //nologo "$env:SystemRoot\\System32\\slmgr.vbs" /xpr; if ($RescueUsbRoot) { $mas = Join-Path $RescueUsbRoot "RescueUSB\\Installers\\MAS_AIO.cmd"; if (Test-Path -LiteralPath $mas) { Start-Process -FilePath $mas -ArgumentList "/HWID" -Wait -WindowStyle Hidden } }',
       defaultSelected: true,
     },
     {
@@ -342,7 +342,7 @@ export const CATALOG_ITEMS = {
       offlineInstaller: 'amd-software-adrenalin-edition.exe',
       offlineArgs: '-install -quiet',
       command:
-        'if (Get-CimInstance Win32_VideoController | Where-Object { $_.PNPDeviceID -match "VEN_1002" }) { Get-PSDrive -PSProvider FileSystem | ForEach-Object { $amdDrv = Join-Path $_.Root "RescueUSB\\Drivers\\AMD"; if (Test-Path $amdDrv) { pnputil /add-driver "$amdDrv\\*.inf" /subdirs /install } } }',
+        'if ($RescueUsbRoot -and (Get-CimInstance Win32_VideoController | Where-Object { $_.PNPDeviceID -match "VEN_1002" })) { $amdDrv = Join-Path $RescueUsbRoot "RescueUSB\\Drivers\\AMD"; if (Test-Path -LiteralPath $amdDrv) { pnputil /add-driver "$amdDrv\\*.inf" /subdirs /install } }',
       defaultSelected: false,
     },
     {
@@ -353,7 +353,7 @@ export const CATALOG_ITEMS = {
       shortDesc: 'Драйвер USB/HID контроллеров СЖО, экранов и хабов.',
       fullDesc: 'Виртуальный COM-порт и USB-драйвер для микроконтроллеров STM32, используемых в водоблоках с дисплеями, кастомных контроллерах подсветки и игровых девайсах.',
       command:
-        'Get-PSDrive -PSProvider FileSystem | ForEach-Object { $stmDrv = Join-Path $_.Root "RescueUSB\\Drivers\\STM"; if (Test-Path $stmDrv) { pnputil /add-driver "$stmDrv\\*.inf" /subdirs /install } }; pnputil /scan-devices',
+        'if ($RescueUsbRoot) { $stmDrv = Join-Path $RescueUsbRoot "RescueUSB\\Drivers\\STM"; if (Test-Path -LiteralPath $stmDrv) { pnputil /add-driver "$stmDrv\\*.inf" /subdirs /install } }; pnputil /scan-devices',
       defaultSelected: true,
     },
     {
@@ -366,7 +366,7 @@ export const CATALOG_ITEMS = {
       offlineInstaller: 'SetupChipset.exe',
       offlineArgs: '-overall -s -norestart',
       command:
-        'Get-PSDrive -PSProvider FileSystem | ForEach-Object { $inDrv = Join-Path $_.Root "RescueUSB\\Drivers\\Intel"; if (Test-Path $inDrv) { pnputil /add-driver "$inDrv\\*.inf" /subdirs /install } }; pnputil /scan-devices',
+        'if ($RescueUsbRoot) { $inDrv = Join-Path $RescueUsbRoot "RescueUSB\\Drivers\\Intel"; if (Test-Path -LiteralPath $inDrv) { pnputil /add-driver "$inDrv\\*.inf" /subdirs /install } }; pnputil /scan-devices',
       defaultSelected: true,
     },
     {
@@ -377,7 +377,7 @@ export const CATALOG_ITEMS = {
       shortDesc: 'Офлайн-база драйверов для 2.5G Ethernet и Wi-Fi 6E/7.',
       fullDesc: 'Устанавливается из локальной папки флешки ($WinPEDriver$ и RescueUSB\\Drivers), чтобы интернет заработал сразу после первого запуска Windows.',
       command:
-        'Get-PSDrive -PSProvider FileSystem | ForEach-Object { foreach ($sub in @("RescueUSB\\Drivers", \'$WinPEDriver$\')) { $drv = Join-Path $_.Root $sub; if (Test-Path $drv) { pnputil /add-driver "$drv\\*.inf" /subdirs /install } } }',
+        'if ($RescueUsbRoot) { foreach ($sub in @("RescueUSB\\Drivers", \'$WinPEDriver$\')) { $drv = Join-Path $RescueUsbRoot $sub; if (Test-Path -LiteralPath $drv) { pnputil /add-driver "$drv\\*.inf" /subdirs /install } } }',
       defaultSelected: true,
     },
   ],
@@ -510,8 +510,7 @@ export const CATALOG_ITEMS = {
       fullDesc: 'Фоновая служба для работы цифровых дисплеев на кулерах и СЖО серий AK Digital / LD / LQ / Mystique.',
       offlineInstaller: 'DeepCool-Digital-Setup.exe',
       offlineArgs: '/VERYSILENT /NORESTART',
-      command:
-        'Get-PSDrive -PSProvider FileSystem | ForEach-Object { $dc = Join-Path $_.Root "RescueUSB\\Installers\\DeepCool-Digital-Setup.exe"; if (Test-Path $dc) { Start-Process -FilePath $dc -ArgumentList "/VERYSILENT /NORESTART" -Wait } }; pnputil /scan-devices',
+      command: 'pnputil /scan-devices',
       defaultSelected: false,
     },
   ],
@@ -586,6 +585,8 @@ export const FALLBACK_DISKS = [
     freeGb: 953.9,
     isUsb: false,
     isSystem: false,
+    isReadOnly: false,
+    isOffline: false,
     partitions: [
       { id: 1, label: 'Раздел 1 · Системный EFI', sizeGb: 0.3, fs: 'FAT32', type: 'системный' },
       { id: 2, label: 'Раздел 2 · Зарезервировано Microsoft', sizeGb: 0.016, fs: 'MSR', type: 'системный' },
@@ -601,6 +602,8 @@ export const FALLBACK_DISKS = [
     freeGb: 14.2,
     isUsb: true,
     isSystem: false,
+    isReadOnly: false,
+    isOffline: false,
     partitions: [
       { id: 1, label: 'Раздел 1 · WINPE_BOOT', sizeGb: 29.3, fs: 'NTFS', type: 'флешка' },
     ],

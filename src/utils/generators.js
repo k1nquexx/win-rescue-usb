@@ -5,6 +5,43 @@ import {
   USER_SETTINGS_OPTIONS,
 } from '../data/catalog.js';
 
+const RESERVED_WINDOWS_NAMES = new Set([
+  'administrator',
+  'администратор',
+  'guest',
+  'гость',
+  'defaultaccount',
+  'wdagutilityaccount',
+  'system',
+  'local service',
+  'network service',
+  'none',
+  'все',
+  'everyone',
+  'con',
+  'prn',
+  'aux',
+  'nul',
+  'com1',
+  'com2',
+  'com3',
+  'com4',
+  'com5',
+  'com6',
+  'com7',
+  'com8',
+  'com9',
+  'lpt1',
+  'lpt2',
+  'lpt3',
+  'lpt4',
+  'lpt5',
+  'lpt6',
+  'lpt7',
+  'lpt8',
+  'lpt9',
+]);
+
 export function escapeXml(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -14,12 +51,17 @@ export function escapeXml(value) {
     .replace(/'/g, '&apos;');
 }
 
+// [V2-BUG-06] Filter illegal chars, trailing dots, and reserved Windows account/device names
 export function sanitizeWindowsUsername(rawName) {
   const cleaned = String(rawName || 'Fosters')
     .replace(/["/\\[\]:;|=,+*?<>@\r\n\0]/g, '')
+    .replace(/\.+$/g, '')
     .trim()
     .slice(0, 20);
-  return cleaned || 'Fosters';
+  if (!cleaned || RESERVED_WINDOWS_NAMES.has(cleaned.toLowerCase())) {
+    return 'Fosters';
+  }
+  return cleaned;
 }
 
 export function sanitizePsComment(str) {
@@ -248,6 +290,13 @@ export function generatePostInstallScript(config) {
     `# Пользователь: ${safeUser} | Заказ: ${safeOrder}`,
     `# ==============================================================================`,
     `$ErrorActionPreference = "SilentlyContinue"`,
+    ``,
+    `# [V2-BUG-10] Единоразовое определение корня загрузочной флешки RescueUSB`,
+    `$RescueDrive = Get-PSDrive -PSProvider FileSystem | Where-Object {`,
+    `  Test-Path -LiteralPath (Join-Path $_.Root "RescueUSB")`,
+    `} | Select-Object -First 1`,
+    `$RescueUsbRoot = if ($RescueDrive) { $RescueDrive.Root } else { $null }`,
+    ``,
     `Write-Host "=== [1/5] Подготавливаем профиль Windows (${profile.id.toUpperCase()}) ===" -ForegroundColor Cyan`,
     ``,
     `# 1. Удаление ненужных предустановленных Appx-пакетов для выбранного профиля`,
@@ -268,14 +317,22 @@ export function generatePostInstallScript(config) {
     `reg add "HKCU\\Software\\Microsoft\\Windows\\DWM" /v ColorPrevalence /t REG_DWORD /d ${theme.colorPrevalence ?? 0} /f | Out-Null`,
     `reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced" /v TaskbarAl /t REG_DWORD /d ${theme.taskbarAlign} /f | Out-Null`,
     ``,
-    `# Установка фирменных обоев выбранной темы (${theme.wallpaperFile || 'win11.bmp'})`,
-    `Get-PSDrive -PSProvider FileSystem | ForEach-Object {`,
-    `  $wpSrc = Join-Path $_.Root "RescueUSB\\Themes\\${theme.wallpaperFile || 'win11.bmp'}"`,
-    `  if (Test-Path $wpSrc) {`,
+    `# [V2-BUG-05] Надёжное применение обоев рабочего стола через Win32 SystemParametersInfo (SPI_SETDESKWALLPAPER)`,
+    `Add-Type -TypeDefinition @"`,
+    `using System;`,
+    `using System.Runtime.InteropServices;`,
+    `public class Win32Wallpaper {`,
+    `  [DllImport("user32.dll", CharSet = CharSet.Auto)]`,
+    `  public static extern int SystemParametersInfo(int uAction, int uParam, string lpvParam, int fuWinIni);`,
+    `}`,
+    `"@ -ErrorAction SilentlyContinue`,
+    `if ($RescueUsbRoot) {`,
+    `  $wpSrc = Join-Path $RescueUsbRoot "RescueUSB\\Themes\\${theme.wallpaperFile || 'win11.bmp'}"`,
+    `  if (Test-Path -LiteralPath $wpSrc) {`,
     `    $wpDst = "$env:SystemRoot\\Web\\Wallpaper\\RescueUSB_${theme.wallpaperFile || 'win11.bmp'}"`,
-    `    Copy-Item $wpSrc $wpDst -Force`,
+    `    Copy-Item -LiteralPath $wpSrc -Destination $wpDst -Force`,
     `    reg add "HKCU\\Control Panel\\Desktop" /v WallPaper /t REG_SZ /d "$wpDst" /f | Out-Null`,
-    `    RUNDLL32.EXE user32.dll,UpdatePerUserSystemParameters 1, True`,
+    `    [Win32Wallpaper]::SystemParametersInfo(0x0014, 0, $wpDst, 0x01 -bor 0x02) | Out-Null`,
     `  }`,
     `}`,
   ];
@@ -333,20 +390,27 @@ export function generatePostInstallScript(config) {
   lines.push(
     ``,
     `Write-Host "=== [5/5] Гибридная установка выбранных программ и драйверов (Offline USB + Winget) ===" -ForegroundColor Cyan`,
+    `# [V2-BUG-02] Поддержка .msi через msiexec.exe, копирование портативных утилит (OCCT.exe) и запуск .exe без -NoNewWindow`,
     `function Install-RescuePackage {`,
     `  param([string]$Title, [string]$WingetId, [string]$OfflineExe, [string]$OfflineArgs)`,
     `  Write-Host "Установка: $Title..." -ForegroundColor Green`,
     `  $installedOffline = $false`,
-    `  if ($OfflineExe) {`,
-    `    foreach ($d in (Get-PSDrive -PSProvider FileSystem)) {`,
-    `      $candidate = Join-Path $d.Root "RescueUSB\\Installers\\$OfflineExe"`,
-    `      if (Test-Path $candidate) {`,
-    `        Write-Host "  -> Найден офлайн-инсталлятор $candidate" -ForegroundColor Cyan`,
-    `        if ($OfflineArgs) { Start-Process -FilePath $candidate -ArgumentList $OfflineArgs -Wait -NoNewWindow }`,
-    `        else { Start-Process -FilePath $candidate -Wait -NoNewWindow }`,
-    `        $installedOffline = $true`,
-    `        break`,
+    `  if ($OfflineExe -and $RescueUsbRoot) {`,
+    `    $candidate = Join-Path -Path $RescueUsbRoot -ChildPath "RescueUSB\\Installers\\$OfflineExe"`,
+    `    if (Test-Path -LiteralPath $candidate) {`,
+    `      Write-Host "  -> Найден офлайн-пакет $candidate" -ForegroundColor Cyan`,
+    `      if ($candidate -match '\\.msi$') {`,
+    `        $msiArgs = "/i \`"$candidate\`" $OfflineArgs".Trim()`,
+    `        Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArgs -Wait`,
+    `      } elseif ([string]::IsNullOrWhiteSpace($OfflineArgs)) {`,
+    `        $portableDir = "$env:ProgramFiles\\RescueUSB_Tools"`,
+    `        New-Item -ItemType Directory -Path $portableDir -Force | Out-Null`,
+    `        Copy-Item -LiteralPath $candidate -Destination (Join-Path $portableDir $OfflineExe) -Force`,
+    `        Write-Host "  -> Портативная утилита скопирована в $portableDir\\$OfflineExe" -ForegroundColor Cyan`,
+    `      } else {`,
+    `        Start-Process -FilePath $candidate -ArgumentList $OfflineArgs -Wait`,
     `      }`,
+    `      $installedOffline = $true`,
     `    }`,
     `  }`,
     `  if (-not $installedOffline -and $WingetId) {`,
@@ -403,7 +467,7 @@ if (-not $WimPath) {
   foreach ($drv in [char[]]([char]'C'..[char]'Z')) {
     foreach ($ext in @("wim", "esd")) {
       $candidate = "\${drv}:\\sources\\install.$ext"
-      if (Test-Path $candidate) {
+      if (Test-Path -LiteralPath $candidate) {
         $WimPath = $candidate
         break
       }
@@ -417,7 +481,7 @@ if ($DryRun) {
   exit 0
 }
 
-if (-not $WimPath -or -not (Test-Path $WimPath)) {
+if (-not $WimPath -or -not (Test-Path -LiteralPath $WimPath)) {
   Write-Error "Образ sources\\install.wim или install.esd не найден ни на одном носителе!"
   exit 1
 }
@@ -438,12 +502,15 @@ Write-Host "4. Копирование конфигурации unattend.xml (spe
 New-Item -ItemType Directory -Path "W:\\Windows\\Panther" -Force | Out-Null
 New-Item -ItemType Directory -Path "W:\\Windows\\Setup\\Scripts" -Force | Out-Null
 
-# Удаляем проход windowsPE при копировании в Panther, так как диск уже размечен и образ применён
-$rawXml = Get-Content "$PSScriptRoot\\autounattend.xml" -Raw -Encoding UTF8
+# [V2-BUG-09] Чтение через -LiteralPath и запись unattend.xml в UTF-8 без BOM
+$unattendSrc = Join-Path $PSScriptRoot "autounattend.xml"
+$rawXml = Get-Content -LiteralPath $unattendSrc -Raw -Encoding UTF8
 $cleanXml = [regex]::Replace($rawXml, '(?s)<settings pass="windowsPE">.*?</settings>', '')
-Set-Content -Path "W:\\Windows\\Panther\\unattend.xml" -Value $cleanXml -Encoding UTF8
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText("W:\\Windows\\Panther\\unattend.xml", $cleanXml, $utf8NoBom)
 
-Copy-Item "$PSScriptRoot\\post-install-tweaks.ps1" "W:\\Windows\\Setup\\Scripts\\post-install-tweaks.ps1" -Force
+$postInstallSrc = Join-Path $PSScriptRoot "post-install-tweaks.ps1"
+Copy-Item -LiteralPath $postInstallSrc -Destination "W:\\Windows\\Setup\\Scripts\\post-install-tweaks.ps1" -Force
 
 Write-Host "5. Создание загрузчика UEFI (bcdboot)..." -ForegroundColor Cyan
 bcdboot W:\\Windows /s S: /f UEFI /l ru-ru
@@ -455,8 +522,10 @@ Write-Host "Установка образа завершена! ПК готов 
 `;
 }
 
+// [V2-BUG-08] Include chcp 65001 >nul for proper Cyrillic rendering in WinPE cmd.exe
 export function generateStartnetCmd() {
   return `@echo off
+chcp 65001 >nul
 wpeinit
 powercfg /s 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
 echo Поиск накопителя Rescue USB...
