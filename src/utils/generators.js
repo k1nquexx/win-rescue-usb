@@ -3,10 +3,38 @@ import {
   WINDOWS_THEMES,
   CATALOG_ITEMS,
   USER_SETTINGS_OPTIONS,
-} from '../data/catalog';
+} from '../data/catalog.js';
+
+export function escapeXml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+export function sanitizeWindowsUsername(rawName) {
+  const cleaned = String(rawName || 'Fosters')
+    .replace(/["/\\[\]:;|=,+*?<>@\r\n\0]/g, '')
+    .trim()
+    .slice(0, 20);
+  return cleaned || 'Fosters';
+}
+
+export function sanitizePsComment(str) {
+  return String(str ?? '')
+    .replace(/[\r\n\0]/g, ' ')
+    .trim();
+}
+
+export function sanitizeDiskNumber(num) {
+  const parsed = Number(num);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 0;
+}
 
 export function generateDiskpartScript(config) {
-  const diskNum = config.selectedDiskNumber ?? 0;
+  const diskNum = sanitizeDiskNumber(config.selectedDiskNumber);
   return `rem ============================================================================
 rem Автоматическая разметка накопителя (Disk ${diskNum}) — GPT / UEFI
 rem Сгенерировано мастером Rescue USB
@@ -30,13 +58,20 @@ exit
 }
 
 export function generateAutounattendXml(config) {
-  const username = (config.username || 'Fosters').trim();
-  const diskNum = config.selectedDiskNumber ?? 0;
+  const cleanUser = sanitizeWindowsUsername(config.username);
+  const username = escapeXml(cleanUser);
+  const brandName = escapeXml(sanitizePsComment(config.brandName || 'Fosters PC') || 'Fosters PC');
+  const safeOrder = escapeXml(
+    sanitizePsComment(config.orderNumber || 'Без номера').replace(/--/g, '-')
+  );
+  const safeThemeId = escapeXml(sanitizePsComment(config.themeId || 'win11').replace(/--/g, '-'));
+  const diskNum = sanitizeDiskNumber(config.selectedDiskNumber);
   const profile = WINDOWS_PROFILES.find((p) => p.id === config.profileId) || WINDOWS_PROFILES[2];
+  const safeProfileTitle = escapeXml(profile.title.replace(/--/g, '-'));
 
   return `<?xml version="1.0" encoding="utf-8"?>
 <unattend xmlns="urn:schemas-microsoft-com:unattend" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
-  <!-- Профиль: ${profile.title} | Тема: ${config.themeId} | Заказ: ${config.orderNumber || 'Без номера'} -->
+  <!-- Профиль: ${safeProfileTitle} | Тема: ${safeThemeId} | Заказ: ${safeOrder} -->
   <settings pass="windowsPE">
     <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
       <SetupUILanguage>
@@ -120,7 +155,7 @@ export function generateAutounattendXml(config) {
       <UserData>
         <AcceptEula>true</AcceptEula>
         <FullName>${username}</FullName>
-        <Organization>${config.brandName || 'Fosters PC'}</Organization>
+        <Organization>${brandName}</Organization>
       </UserData>
     </component>
   </settings>
@@ -185,6 +220,10 @@ export function generatePostInstallScript(config) {
   const theme = WINDOWS_THEMES.find((t) => t.id === config.themeId) || WINDOWS_THEMES[0];
   const isDark = config.colorMode !== 'light';
 
+  const safeBrand = sanitizePsComment(config.brandName || 'Fosters PC') || 'Fosters PC';
+  const safeUser = sanitizeWindowsUsername(config.username);
+  const safeOrder = sanitizePsComment(config.orderNumber || 'Не указан') || 'Не указан';
+
   const allCatalog = [
     ...CATALOG_ITEMS.programs,
     ...CATALOG_ITEMS.drivers,
@@ -192,7 +231,7 @@ export function generatePostInstallScript(config) {
     ...CATALOG_ITEMS.rgb,
   ];
   const selectedCatalog = allCatalog.filter((item) => config.selectedItems.includes(item.id));
-  const wingetItems = selectedCatalog.filter((item) => item.wingetId);
+  const installableItems = selectedCatalog.filter((item) => item.wingetId || item.offlineInstaller);
   const regTweakItems = selectedCatalog.filter((item) => item.regCommands);
   const cmdItems = selectedCatalog.filter((item) => item.command);
 
@@ -203,10 +242,10 @@ export function generatePostInstallScript(config) {
   const lines = [
     `#Requires -RunAsAdministrator`,
     `# ==============================================================================`,
-    `# Скрипт подготовки рабочего окружения Windows 11 (${config.brandName || 'Fosters PC'})`,
+    `# Скрипт подготовки рабочего окружения Windows 11 (${safeBrand})`,
     `# Профиль: ${profile.title}`,
     `# Тема: ${theme.title} (${isDark ? 'Тёмная' : 'Светлая'})`,
-    `# Пользователь: ${config.username || 'Fosters'} | Заказ: ${config.orderNumber || 'Не указан'}`,
+    `# Пользователь: ${safeUser} | Заказ: ${safeOrder}`,
     `# ==============================================================================`,
     `$ErrorActionPreference = "SilentlyContinue"`,
     `Write-Host "=== [1/5] Подготавливаем профиль Windows (${profile.id.toUpperCase()}) ===" -ForegroundColor Cyan`,
@@ -221,10 +260,24 @@ export function generatePostInstallScript(config) {
     `  Get-AppxProvisionedPackage -Online | Where-Object DisplayName -like "*$pkg*" | Remove-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue`,
     `}`,
     ``,
-    `Write-Host "=== [2/5] Настройка темы оформления (${theme.title}) и цвета системы ===" -ForegroundColor Cyan`,
+    `Write-Host "=== [2/5] Настройка темы оформления (${theme.title}), обоев и акцентов ===" -ForegroundColor Cyan`,
     `reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize" /v AppsUseLightTheme /t REG_DWORD /d ${isDark ? 0 : 1} /f | Out-Null`,
     `reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize" /v SystemUsesLightTheme /t REG_DWORD /d ${isDark ? 0 : 1} /f | Out-Null`,
+    `reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize" /v ColorPrevalence /t REG_DWORD /d ${theme.colorPrevalence ?? 0} /f | Out-Null`,
+    `reg add "HKCU\\Software\\Microsoft\\Windows\\DWM" /v AccentColor /t REG_DWORD /d ${theme.accentDword || '0xffd47800'} /f | Out-Null`,
+    `reg add "HKCU\\Software\\Microsoft\\Windows\\DWM" /v ColorPrevalence /t REG_DWORD /d ${theme.colorPrevalence ?? 0} /f | Out-Null`,
     `reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced" /v TaskbarAl /t REG_DWORD /d ${theme.taskbarAlign} /f | Out-Null`,
+    ``,
+    `# Установка фирменных обоев выбранной темы (${theme.wallpaperFile || 'win11.bmp'})`,
+    `Get-PSDrive -PSProvider FileSystem | ForEach-Object {`,
+    `  $wpSrc = Join-Path $_.Root "RescueUSB\\Themes\\${theme.wallpaperFile || 'win11.bmp'}"`,
+    `  if (Test-Path $wpSrc) {`,
+    `    $wpDst = "$env:SystemRoot\\Web\\Wallpaper\\RescueUSB_${theme.wallpaperFile || 'win11.bmp'}"`,
+    `    Copy-Item $wpSrc $wpDst -Force`,
+    `    reg add "HKCU\\Control Panel\\Desktop" /v WallPaper /t REG_SZ /d "$wpDst" /f | Out-Null`,
+    `    RUNDLL32.EXE user32.dll,UpdatePerUserSystemParameters 1, True`,
+    `  }`,
+    `}`,
   ];
 
   if (theme.classicContext) {
@@ -244,6 +297,27 @@ export function generatePostInstallScript(config) {
     for (const cmd of tweak.regCommands) {
       lines.push(cmd);
     }
+    if (tweak.id === 'tweak_cpu') {
+      const mode = ['auto', 'amd', 'intel'].includes(config.cpuVendorMode)
+        ? config.cpuVendorMode
+        : 'auto';
+      lines.push(`# Режим оптимизации ЦП: ${mode.toUpperCase()}`);
+      if (mode === 'amd' || mode === 'auto') {
+        lines.push(
+          `if ("${mode}" -eq "amd" -or (Get-CimInstance Win32_Processor).Manufacturer -match "AMD") {`,
+          `  reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Power\\PowerSettings\\54533251-82be-4824-96c1-47b60b740d00\\0cc5b647-c1df-4637-891a-dec35c318583" /v ValueMax /t REG_DWORD /d 0 /f | Out-Null`,
+          `}`
+        );
+      }
+      if (mode === 'intel' || mode === 'auto') {
+        lines.push(
+          `if ("${mode}" -eq "intel" -or (Get-CimInstance Win32_Processor).Manufacturer -match "Intel") {`,
+          `  powercfg -setacvalueindex scheme_current sub_processor HETEROPOLICY 4`,
+          `  powercfg -setactive scheme_current`,
+          `}`
+        );
+      }
+    }
   }
 
   lines.push(
@@ -258,7 +332,31 @@ export function generatePostInstallScript(config) {
 
   lines.push(
     ``,
-    `Write-Host "=== [5/5] Автоматическая установка выбранных программ и драйверов ===" -ForegroundColor Cyan`
+    `Write-Host "=== [5/5] Гибридная установка выбранных программ и драйверов (Offline USB + Winget) ===" -ForegroundColor Cyan`,
+    `function Install-RescuePackage {`,
+    `  param([string]$Title, [string]$WingetId, [string]$OfflineExe, [string]$OfflineArgs)`,
+    `  Write-Host "Установка: $Title..." -ForegroundColor Green`,
+    `  $installedOffline = $false`,
+    `  if ($OfflineExe) {`,
+    `    foreach ($d in (Get-PSDrive -PSProvider FileSystem)) {`,
+    `      $candidate = Join-Path $d.Root "RescueUSB\\Installers\\$OfflineExe"`,
+    `      if (Test-Path $candidate) {`,
+    `        Write-Host "  -> Найден офлайн-инсталлятор $candidate" -ForegroundColor Cyan`,
+    `        if ($OfflineArgs) { Start-Process -FilePath $candidate -ArgumentList $OfflineArgs -Wait -NoNewWindow }`,
+    `        else { Start-Process -FilePath $candidate -Wait -NoNewWindow }`,
+    `        $installedOffline = $true`,
+    `        break`,
+    `      }`,
+    `    }`,
+    `  }`,
+    `  if (-not $installedOffline -and $WingetId) {`,
+    `    if (Get-Command winget -ErrorAction SilentlyContinue) {`,
+    `      winget install --id "$WingetId" --silent --accept-package-agreements --accept-source-agreements`,
+    `    } else {`,
+    `      Write-Host "  [!] Winget недоступен и офлайн-пакет $OfflineExe не найден на флешке." -ForegroundColor Yellow`,
+    `    }`,
+    `  }`,
+    `}`
   );
 
   for (const item of cmdItems) {
@@ -266,16 +364,13 @@ export function generatePostInstallScript(config) {
     lines.push(item.command);
   }
 
-  if (wingetItems.length > 0) {
+  for (const item of installableItems) {
+    const safeTitle = sanitizePsComment(item.title).replace(/"/g, "'");
+    const safeWinget = sanitizePsComment(item.wingetId || '').replace(/"/g, '');
+    const safeOffline = sanitizePsComment(item.offlineInstaller || '').replace(/"/g, '');
+    const safeArgs = sanitizePsComment(item.offlineArgs || '').replace(/"/g, "'");
     lines.push(
-      `if (Get-Command winget -ErrorAction SilentlyContinue) {`,
-      ...wingetItems.map(
-        (item) =>
-          `  Write-Host "Установка ${item.title} (${item.wingetId})..." -ForegroundColor Green\n  winget install --id "${item.wingetId}" --silent --accept-package-agreements --accept-source-agreements`
-      ),
-      `} else {`,
-      `  Write-Host "Winget ещё инициализируется, запуск офлайн-установщиков из папки флешки \\Programs..." -ForegroundColor Yellow`,
-      `}`
+      `Install-RescuePackage -Title "${safeTitle}" -WingetId "${safeWinget}" -OfflineExe "${safeOffline}" -OfflineArgs "${safeArgs}"`
     );
   }
 
@@ -286,41 +381,75 @@ export function generatePostInstallScript(config) {
     `Write-Host "Готово! Настройка Windows 11 успешно завершена." -ForegroundColor Green`
   );
 
-  return lines.join('\r\n');
+  return '\uFEFF' + lines.join('\r\n');
 }
 
 export function generateWinPeInstallScript(config) {
-  const diskNum = config.selectedDiskNumber ?? 0;
-  return `#Requires -RunAsAdministrator
+  const diskNum = sanitizeDiskNumber(config.selectedDiskNumber);
+  return `\uFEFF#Requires -RunAsAdministrator
 # ==============================================================================
 # Скрипт развёртывания образа Windows 11 из среды WinPE (Флешка-спаситель)
 # ==============================================================================
 param(
-  [string]$WimPath = "D:\\sources\\install.wim",
+  [string]$WimPath = "",
   [int]$ImageIndex = 1,
   [switch]$DryRun
 )
 
-Write-Host "1. Проверка наличия образа $WimPath..." -ForegroundColor Cyan
+$ErrorActionPreference = "Stop"
+
+Write-Host "1. Поиск установочного образа sources\\install.wim или install.esd..." -ForegroundColor Cyan
+if (-not $WimPath) {
+  foreach ($drv in [char[]]([char]'C'..[char]'Z')) {
+    foreach ($ext in @("wim", "esd")) {
+      $candidate = "\${drv}:\\sources\\install.$ext"
+      if (Test-Path $candidate) {
+        $WimPath = $candidate
+        break
+      }
+    }
+    if ($WimPath) { break }
+  }
+}
+
 if ($DryRun) {
   Write-Host "[DRY-RUN] Симуляция разметки диска ${diskNum} и применения образа $WimPath" -ForegroundColor Yellow
   exit 0
 }
 
+if (-not $WimPath -or -not (Test-Path $WimPath)) {
+  Write-Error "Образ sources\\install.wim или install.esd не найден ни на одном носителе!"
+  exit 1
+}
+
 Write-Host "2. Разметка накопителя Disk ${diskNum} через DiskPart..." -ForegroundColor Cyan
 diskpart /s "$PSScriptRoot\\diskpart-script.txt"
+if ($LASTEXITCODE -ne 0) {
+  throw "Ошибка разметки диска в DiskPart (код ошибки: $LASTEXITCODE)"
+}
 
-Write-Host "3. Развёртывание образа Windows 11 на раздел W: (DISM /Apply-Image)..." -ForegroundColor Cyan
+Write-Host "3. Развёртывание образа Windows 11 ($WimPath) на раздел W: (DISM /Apply-Image)..." -ForegroundColor Cyan
 dism /Apply-Image /ImageFile:"$WimPath" /Index:$ImageIndex /ApplyDir:W:\\
+if ($LASTEXITCODE -ne 0) {
+  throw "Ошибка применения образа DISM (код ошибки: $LASTEXITCODE)"
+}
 
-Write-Host "4. Копирование конфигурации autounattend.xml и скрипта пост-установки..." -ForegroundColor Cyan
+Write-Host "4. Копирование конфигурации unattend.xml (specialize/oobeSystem) и скрипта пост-установки..." -ForegroundColor Cyan
 New-Item -ItemType Directory -Path "W:\\Windows\\Panther" -Force | Out-Null
 New-Item -ItemType Directory -Path "W:\\Windows\\Setup\\Scripts" -Force | Out-Null
-Copy-Item "$PSScriptRoot\\autounattend.xml" "W:\\Windows\\Panther\\unattend.xml" -Force
+
+# Удаляем проход windowsPE при копировании в Panther, так как диск уже размечен и образ применён
+$rawXml = Get-Content "$PSScriptRoot\\autounattend.xml" -Raw -Encoding UTF8
+$cleanXml = [regex]::Replace($rawXml, '(?s)<settings pass="windowsPE">.*?</settings>', '')
+Set-Content -Path "W:\\Windows\\Panther\\unattend.xml" -Value $cleanXml -Encoding UTF8
+
 Copy-Item "$PSScriptRoot\\post-install-tweaks.ps1" "W:\\Windows\\Setup\\Scripts\\post-install-tweaks.ps1" -Force
 
 Write-Host "5. Создание загрузчика UEFI (bcdboot)..." -ForegroundColor Cyan
 bcdboot W:\\Windows /s S: /f UEFI /l ru-ru
+if ($LASTEXITCODE -ne 0) {
+  throw "Ошибка создания загрузчика bcdboot (код ошибки: $LASTEXITCODE)"
+}
 
 Write-Host "Установка образа завершена! ПК готов к перезагрузке." -ForegroundColor Green
 `;
@@ -339,4 +468,14 @@ for %%d in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
 )
 cmd.exe
 `;
+}
+
+export function buildGeneratedFiles(config) {
+  return {
+    autounattendXml: generateAutounattendXml(config),
+    diskpartScript: generateDiskpartScript(config),
+    postInstallScript: generatePostInstallScript(config),
+    winpeScript: generateWinPeInstallScript(config),
+    startnetCmd: generateStartnetCmd(),
+  };
 }

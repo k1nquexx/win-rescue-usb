@@ -1,13 +1,29 @@
 {
   "name": "win-rescue-usb",
   "version": "1.0.0",
+  "type": "module",
   "description": "Кастомный мастер установки и оптимизации Windows 11 для загрузочной флешки (WinPE + FirstLogon Tweaker)",
   "main": "electron/main.cjs",
   "scripts": {
     "dev:vite": "vite",
-    "dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && electron .\"",
+    "dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && electron . --dev\"",
     "build": "vite build",
+    "dist:portable": "vite build && electron-builder --win portable --x64",
     "start": "electron ."
+  },
+  "build": {
+    "appId": "com.rescueusb.installer",
+    "productName": "win-rescue-usb",
+    "files": [
+      "dist/**/*",
+      "electron/**/*"
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ],
+      "artifactName": "win-rescue-usb.exe"
+    }
   },
   "dependencies": {
     "lucide-react": "^0.468.0"

@@ -89,6 +89,9 @@ export const WINDOWS_THEMES = [
     title: 'Windows 11',
     subtitle: 'Стандартный стиль Windows 11 Bloom, панель задач по центру, фирменные синие акценты.',
     accent: '#0078D4',
+    accentDword: '0xffd47800',
+    colorPrevalence: 0,
+    wallpaperFile: 'win11.bmp',
     taskbarAlign: 1, // Center
     classicContext: false,
     gradient: 'from-blue-600 via-indigo-800 to-slate-950',
@@ -99,6 +102,9 @@ export const WINDOWS_THEMES = [
     title: 'Windows 10 · стиль',
     subtitle: 'Стиль Windows 10: значки панели слева, классическое контекстное меню и синий фон. Основа — Windows 11.',
     accent: '#00a2ed',
+    accentDword: '0xffeda200',
+    colorPrevalence: 1,
+    wallpaperFile: 'win10.bmp',
     taskbarAlign: 0, // Left
     classicContext: true,
     gradient: 'from-cyan-500 via-blue-700 to-slate-950',
@@ -109,6 +115,9 @@ export const WINDOWS_THEMES = [
     title: 'DOOM',
     subtitle: 'Игровые темы меняют обои, цвета и системные значки. Меню «Пуск» остаётся штатным.',
     accent: '#ef4444',
+    accentDword: '0xff4444ef',
+    colorPrevalence: 1,
+    wallpaperFile: 'doom.bmp',
     taskbarAlign: 0,
     classicContext: true,
     gradient: 'from-red-600 via-orange-900 to-stone-950',
@@ -119,6 +128,9 @@ export const WINDOWS_THEMES = [
     title: 'Ведьмак',
     subtitle: 'Тёмная атмосфера Неверленда и Каэр Морхена, стальные акценты и минималистичные значки.',
     accent: '#94a3b8',
+    accentDword: '0xffb8a394',
+    colorPrevalence: 1,
+    wallpaperFile: 'witcher.bmp',
     taskbarAlign: 0,
     classicContext: true,
     gradient: 'from-slate-600 via-zinc-800 to-neutral-950',
@@ -129,6 +141,9 @@ export const WINDOWS_THEMES = [
     title: 'S.T.A.L.K.E.R.',
     subtitle: 'Индустриальный постапокалиптический стиль ЧЗО, янтарные акценты интерфейса и тёмная тема.',
     accent: '#f59e0b',
+    accentDword: '0xff0b9ef5',
+    colorPrevalence: 1,
+    wallpaperFile: 'stalker.bmp',
     taskbarAlign: 0,
     classicContext: true,
     gradient: 'from-amber-600 via-yellow-900 to-stone-950',
@@ -169,6 +184,8 @@ export const CATALOG_ITEMS = {
       shortDesc: 'Открывать и создавать архивы .7z, .zip, .rar.',
       fullDesc: 'Бесплатный архиватор с открытым исходным кодом и высокой степенью сжатия. Интегрируется в контекстное меню Проводника Windows и не требует лицензии.',
       wingetId: '7zip.7zip',
+      offlineInstaller: '7z-x64.exe',
+      offlineArgs: '/S',
       defaultSelected: true,
     },
     {
@@ -177,8 +194,10 @@ export const CATALOG_ITEMS = {
       badge: 'GC',
       badgeColor: 'bg-blue-600 text-white',
       shortDesc: 'Открывать сайты в интернете.',
-      fullDesc: 'Браузер на базе Chromium с синхронизацией профиля, расширениями и автоматическими обновлениями безопасности. Устанавливается из официального пакета Google через Windows Package Manager.',
+      fullDesc: 'Браузер на базе Chromium с синхронизацией профиля, расширениями и автоматическими обновлениями безопасности. Устанавливается из официального пакета Google через Windows Package Manager или офлайн-пакета.',
       wingetId: 'Google.Chrome',
+      offlineInstaller: 'ChromeStandaloneSetup64.exe',
+      offlineArgs: '/silent /install',
       defaultSelected: true,
     },
     {
@@ -189,6 +208,8 @@ export const CATALOG_ITEMS = {
       shortDesc: 'Быстрый браузер с защитой приватности.',
       fullDesc: 'Независимый браузер на движке Gecko с полной поддержкой блокировщиков рекламы (uBlock Origin без ограничений Manifest V3) и продвинутой защитой от отслеживания.',
       wingetId: 'Mozilla.Firefox',
+      offlineInstaller: 'FirefoxSetup.exe',
+      offlineArgs: '-ms',
       defaultSelected: false,
     },
     {
@@ -199,6 +220,8 @@ export const CATALOG_ITEMS = {
       shortDesc: 'Покупать, скачивать и запускать игры.',
       fullDesc: 'Клиент игровой платформы Valve для покупки, загрузки, обновления и запуска игр. Вход в учётную запись выполняется пользователем уже после установки.',
       wingetId: 'Valve.Steam',
+      offlineInstaller: 'SteamSetup.exe',
+      offlineArgs: '/S',
       defaultSelected: true,
     },
     {
@@ -207,8 +230,9 @@ export const CATALOG_ITEMS = {
       badge: '.NET',
       badgeColor: 'bg-sky-600 text-white',
       shortDesc: 'Компоненты среды выполнения .NET Framework 2.0 / 3.0 / 3.5.',
-      fullDesc: 'Компоненты Microsoft .NET Framework 3.5 необходимы для запуска классических игр и специализированного софта, созданного для Windows 7/8/10. Устанавливается через DISM с установочного носителя.',
-      command: 'DISM /Online /Enable-Feature /FeatureName:NetFx3 /All /NoRestart',
+      fullDesc: 'Компоненты Microsoft .NET Framework 3.5 необходимы для запуска классических игр и специализированного софта, созданного для Windows 7/8/10. Устанавливается через DISM с установочного носителя или Центра обновления.',
+      command:
+        '$sxsDrive = Get-PSDrive -PSProvider FileSystem | Where-Object { Test-Path (Join-Path $_.Root "sources\\sxs") } | Select-Object -First 1; if ($sxsDrive) { DISM /Online /Enable-Feature /FeatureName:NetFx3 /All /LimitAccess /Source:"$($sxsDrive.Root)sources\\sxs" /NoRestart } else { DISM /Online /Enable-Feature /FeatureName:NetFx3 /All /NoRestart }',
       defaultSelected: true,
     },
     {
@@ -219,6 +243,8 @@ export const CATALOG_ITEMS = {
       shortDesc: 'Пакет библиотек Microsoft Visual C++ 2015–2022 (x86).',
       fullDesc: 'Обязательные системные библиотеки времени выполнения (MSVCP140.dll, VCRUNTIME140.dll) для запуска 32-разрядных игр и программ без ошибок при старте.',
       wingetId: 'Microsoft.VCRedist.2015+.x86',
+      offlineInstaller: 'VC_redist.x86.exe',
+      offlineArgs: '/install /quiet /norestart',
       defaultSelected: true,
     },
     {
@@ -229,6 +255,8 @@ export const CATALOG_ITEMS = {
       shortDesc: 'Пакет библиотек Microsoft Visual C++ 2015–2022 (x64).',
       fullDesc: 'Обязательные 64-разрядные библиотеки времени выполнения Visual C++ для современных игровых движков (Unreal Engine 4/5, Unity, Source 2, REDengine).',
       wingetId: 'Microsoft.VCRedist.2015+.x64',
+      offlineInstaller: 'VC_redist.x64.exe',
+      offlineArgs: '/install /quiet /norestart',
       defaultSelected: true,
     },
     {
@@ -239,6 +267,8 @@ export const CATALOG_ITEMS = {
       shortDesc: 'Библиотеки DirectX 9.0c / 10 / 11 (d3dx9_43.dll, xinput1_3.dll).',
       fullDesc: 'Полный офлайн-пакет классических библиотек DirectX, предотвращающий ошибки отсутствия d3dx9 и xinput в играх.',
       wingetId: 'Microsoft.DirectX',
+      offlineInstaller: 'dxwebsetup.exe',
+      offlineArgs: '/Q',
       defaultSelected: true,
     },
     {
@@ -249,6 +279,8 @@ export const CATALOG_ITEMS = {
       shortDesc: 'Стресс-тестирование и мониторинг температур ПК.',
       fullDesc: 'Профессиональная утилита для проверки стабильности процессора, оперативной памяти, видеокарты и блока питания, а также мониторинга частот, напряжений и температур.',
       wingetId: 'OCCT.OCCT',
+      offlineInstaller: 'OCCT.exe',
+      offlineArgs: '',
       defaultSelected: true,
     },
     {
@@ -257,8 +289,9 @@ export const CATALOG_ITEMS = {
       badge: 'MS',
       badgeColor: 'bg-teal-600 text-white',
       shortDesc: 'Проверка статуса лицензии и запуск скрипта при первом входе.',
-      fullDesc: 'Добавляет задачу проверки статуса цифровой лицензии Windows 11 после подключения к интернету.',
-      command: 'Write-Host "Проверка статуса лицензии Windows (slmgr /xpr)..."',
+      fullDesc: 'Проверяет статус цифровой лицензии Windows 11 через slmgr.vbs /xpr и при наличии локального скрипта MAS_AIO.cmd на флешке выполняет автоматическую проверку активации.',
+      command:
+        'cscript //nologo "$env:SystemRoot\\System32\\slmgr.vbs" /xpr; Get-PSDrive -PSProvider FileSystem | ForEach-Object { $mas = Join-Path $_.Root "RescueUSB\\Installers\\MAS_AIO.cmd"; if (Test-Path $mas) { Start-Process -FilePath $mas -ArgumentList "/HWID" -Wait -WindowStyle Hidden } }',
       defaultSelected: true,
     },
     {
@@ -269,6 +302,8 @@ export const CATALOG_ITEMS = {
       shortDesc: 'Голосовой и текстовый чат для геймеров.',
       fullDesc: 'Официальный клиент Discord с отключённым автозапуском лишних оверлеев для сохранения стабильного фреймрейта.',
       wingetId: 'Discord.Discord',
+      offlineInstaller: 'DiscordSetup.exe',
+      offlineArgs: '-s',
       defaultSelected: false,
     },
     {
@@ -279,6 +314,8 @@ export const CATALOG_ITEMS = {
       shortDesc: 'Быстрый десктопный мессенджер.',
       fullDesc: 'Официальный клиент Telegram для Windows x64.',
       wingetId: 'Telegram.TelegramDesktop',
+      offlineInstaller: 'tsetup-x64.exe',
+      offlineArgs: '/VERYSILENT /NORESTART',
       defaultSelected: false,
     },
   ],
@@ -289,8 +326,10 @@ export const CATALOG_ITEMS = {
       badge: 'NV',
       badgeColor: 'bg-lime-600 text-white',
       shortDesc: 'Официальный центр управления и драйвер для GeForce RTX / GTX.',
-      fullDesc: 'Устанавливает новое приложение NVIDIA App (замена GeForce Experience) и актуальный драйвер Game Ready без телеметрии NVIDIA.',
+      fullDesc: 'Устанавливает приложение NVIDIA App (замена GeForce Experience) и актуальный драйвер Game Ready при обнаружении видеокарты NVIDIA (PCI VEN_10DE).',
       wingetId: 'Nvidia.GeForceExperience',
+      offlineInstaller: 'NVIDIA_App_Setup.exe',
+      offlineArgs: '-s -noreboot',
       defaultSelected: true,
     },
     {
@@ -299,8 +338,11 @@ export const CATALOG_ITEMS = {
       badge: 'AMD',
       badgeColor: 'bg-rose-600 text-white',
       shortDesc: 'Драйвер для видеокарт Radeon и чипсетов AMD.',
-      fullDesc: 'Пакет драйверов AMD Software: Adrenalin Edition и драйверов чипсета AMD Ryzen (3D V-Cache / Power Plan).',
-      command: 'Write-Host "Определение оборудования AMD PCI VEN_1002 / VEN_1022..."',
+      fullDesc: 'Проверяет наличие видеокарты или чипсета AMD (VEN_1002 / VEN_1022), интегрирует INF-драйверы из папки RescueUSB\\Drivers\\AMD и запускает тихую установку AMD Software: Adrenalin Edition.',
+      offlineInstaller: 'amd-software-adrenalin-edition.exe',
+      offlineArgs: '-install -quiet',
+      command:
+        'if (Get-CimInstance Win32_VideoController | Where-Object { $_.PNPDeviceID -match "VEN_1002" }) { Get-PSDrive -PSProvider FileSystem | ForEach-Object { $amdDrv = Join-Path $_.Root "RescueUSB\\Drivers\\AMD"; if (Test-Path $amdDrv) { pnputil /add-driver "$amdDrv\\*.inf" /subdirs /install } } }',
       defaultSelected: false,
     },
     {
@@ -310,7 +352,8 @@ export const CATALOG_ITEMS = {
       badgeColor: 'bg-blue-800 text-white',
       shortDesc: 'Драйвер USB/HID контроллеров СЖО, экранов и хабов.',
       fullDesc: 'Виртуальный COM-порт и USB-драйвер для микроконтроллеров STM32, используемых в водоблоках с дисплеями, кастомных контроллерах подсветки и игровых девайсах.',
-      command: 'pnputil /scan-devices',
+      command:
+        'Get-PSDrive -PSProvider FileSystem | ForEach-Object { $stmDrv = Join-Path $_.Root "RescueUSB\\Drivers\\STM"; if (Test-Path $stmDrv) { pnputil /add-driver "$stmDrv\\*.inf" /subdirs /install } }; pnputil /scan-devices',
       defaultSelected: true,
     },
     {
@@ -320,7 +363,10 @@ export const CATALOG_ITEMS = {
       badgeColor: 'bg-sky-700 text-white',
       shortDesc: 'Системные INF-драйверы чипсетов Intel Core.',
       fullDesc: 'Обеспечивает корректное распознавание всех системных контроллеров PCI Express, SMBus и Management Engine в Диспетчере устройств.',
-      command: 'pnputil /scan-devices',
+      offlineInstaller: 'SetupChipset.exe',
+      offlineArgs: '-overall -s -norestart',
+      command:
+        'Get-PSDrive -PSProvider FileSystem | ForEach-Object { $inDrv = Join-Path $_.Root "RescueUSB\\Drivers\\Intel"; if (Test-Path $inDrv) { pnputil /add-driver "$inDrv\\*.inf" /subdirs /install } }; pnputil /scan-devices',
       defaultSelected: true,
     },
     {
@@ -329,8 +375,9 @@ export const CATALOG_ITEMS = {
       badge: 'NET',
       badgeColor: 'bg-cyan-700 text-white',
       shortDesc: 'Офлайн-база драйверов для 2.5G Ethernet и Wi-Fi 6E/7.',
-      fullDesc: 'Устанавливается из локальной папки флешки на этапе WinPE ($WinPEDriver$), чтобы интернет заработал сразу после первого запуска Windows.',
-      command: 'Write-Host "Интеграция драйверов сети в $WinPEDriver$..."',
+      fullDesc: 'Устанавливается из локальной папки флешки ($WinPEDriver$ и RescueUSB\\Drivers), чтобы интернет заработал сразу после первого запуска Windows.',
+      command:
+        'Get-PSDrive -PSProvider FileSystem | ForEach-Object { foreach ($sub in @("RescueUSB\\Drivers", \'$WinPEDriver$\')) { $drv = Join-Path $_.Root $sub; if (Test-Path $drv) { pnputil /add-driver "$drv\\*.inf" /subdirs /install } } }',
       defaultSelected: true,
     },
   ],
@@ -426,6 +473,8 @@ export const CATALOG_ITEMS = {
       shortDesc: 'Единое управление ARGB-подсветкой без нагрузки на ЦП.',
       fullDesc: 'Лёгкая программа с открытым исходным кодом для синхронизации подсветки материнских плат (ASUS, MSI, Gigabyte, ASRock), видеокарт, ОЗУ и периферии без установки тяжёлых фирменных комбайнов.',
       wingetId: 'CalcProgrammer1.OpenRGB',
+      offlineInstaller: 'OpenRGB_Windows_64.msi',
+      offlineArgs: '/qn /norestart',
       defaultSelected: false,
     },
     {
@@ -436,6 +485,8 @@ export const CATALOG_ITEMS = {
       shortDesc: 'Управление вентиляторами, экранами и СЖО Lian Li.',
       fullDesc: 'Официальная утилита для настройки кривых вращения вентиляторов UNI FAN, подсветки Strimer Plus и LCD-экранов водоблоков.',
       wingetId: 'LianLi.LConnect3',
+      offlineInstaller: 'L-Connect-3-Setup.exe',
+      offlineArgs: '/VERYSILENT /NORESTART',
       defaultSelected: false,
     },
     {
@@ -445,7 +496,9 @@ export const CATALOG_ITEMS = {
       badgeColor: 'bg-red-700 text-white',
       shortDesc: 'Управление подсветкой и охлаждением плат и видеокарт MSI.',
       fullDesc: 'Модульное приложение MSI для настройки ARGB-разъёмов JRAINBOW и мониторинга оборудования.',
-      command: 'Write-Host "Подготовка установщика MSI Center..."',
+      wingetId: 'Micro-StarInternational.MSICenter',
+      offlineInstaller: 'MSI-Center-Installer.exe',
+      offlineArgs: '/VERYSILENT /NORESTART',
       defaultSelected: false,
     },
     {
@@ -455,7 +508,10 @@ export const CATALOG_ITEMS = {
       badgeColor: 'bg-teal-700 text-white',
       shortDesc: 'Вывод температуры и загрузки ЦП на экран кулера/СЖО DeepCool.',
       fullDesc: 'Фоновая служба для работы цифровых дисплеев на кулерах и СЖО серий AK Digital / LD / LQ / Mystique.',
-      command: 'Write-Host "Подготовка службы DeepCool Digital..."',
+      offlineInstaller: 'DeepCool-Digital-Setup.exe',
+      offlineArgs: '/VERYSILENT /NORESTART',
+      command:
+        'Get-PSDrive -PSProvider FileSystem | ForEach-Object { $dc = Join-Path $_.Root "RescueUSB\\Installers\\DeepCool-Digital-Setup.exe"; if (Test-Path $dc) { Start-Process -FilePath $dc -ArgumentList "/VERYSILENT /NORESTART" -Wait } }; pnputil /scan-devices',
       defaultSelected: false,
     },
   ],
@@ -472,9 +528,9 @@ export const USER_SETTINGS_OPTIONS = [
   {
     id: 'pause_updates_35',
     title: 'Пауза обновлений на 35 дней',
-    desc: 'Приостанавливает автоматическую загрузку и перезагрузку Центра обновления Windows на 35 дней после установки.',
+    desc: 'Приостанавливает автоматическую загрузку и перезагрузку Центра обновления Windows на 35 дней от момента установки.',
     defaultChecked: true,
-    reg: 'reg add "HKLM\\SOFTWARE\\Microsoft\\WindowsUpdate\\UX\\Settings" /v PauseUpdatesExpiryTime /t REG_SZ /d "2026-12-15T12:00:00Z" /f',
+    reg: '$start = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"); $end = (Get-Date).ToUniversalTime().AddDays(35).ToString("yyyy-MM-ddTHH:mm:ssZ"); reg add "HKLM\\SOFTWARE\\Microsoft\\WindowsUpdate\\UX\\Settings" /v PauseUpdatesStartTime /t REG_SZ /d $start /f; reg add "HKLM\\SOFTWARE\\Microsoft\\WindowsUpdate\\UX\\Settings" /v PauseUpdatesExpiryTime /t REG_SZ /d $end /f; reg add "HKLM\\SOFTWARE\\Microsoft\\WindowsUpdate\\UX\\Settings" /v PauseFeatureUpdatesEndTime /t REG_SZ /d $end /f; reg add "HKLM\\SOFTWARE\\Microsoft\\WindowsUpdate\\UX\\Settings" /v PauseQualityUpdatesEndTime /t REG_SZ /d $end /f',
   },
   {
     id: 'high_performance_power',
@@ -488,14 +544,14 @@ export const USER_SETTINGS_OPTIONS = [
     title: 'Не выключать экран и сон от сети',
     desc: 'Запрещает уход ПК в спящий режим и отключение монитора при работе от сети (таймаут 0 минут).',
     defaultChecked: true,
-    reg: 'powercfg /change monitor-timeout-ac 0 & powercfg /change standby-timeout-ac 0',
+    reg: 'powercfg /change monitor-timeout-ac 0; powercfg /change standby-timeout-ac 0',
   },
   {
     id: 'disable_telemetry',
     title: 'Отключить телеметрию и сбор диагностических данных',
     desc: 'Останавливает службы DiagTrack и dmwappushservice, блокирует отправку отчётов и рекламного идентификатора.',
     defaultChecked: true,
-    reg: 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection" /v AllowTelemetry /t REG_DWORD /d 0 /f',
+    reg: 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection" /v AllowTelemetry /t REG_DWORD /d 0 /f; Stop-Service DiagTrack -Force -ErrorAction SilentlyContinue; Set-Service DiagTrack -StartupType Disabled -ErrorAction SilentlyContinue',
   },
   {
     id: 'disable_hibernation',

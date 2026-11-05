@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import defaultBranding from './data/branding.json';
 import {
   WIZARD_STEPS,
   WINDOWS_PROFILES,
@@ -8,17 +9,9 @@ import {
   USER_SETTINGS_OPTIONS,
   FALLBACK_DISKS,
 } from './data/catalog';
-import {
-  generateAutounattendXml,
-  generateDiskpartScript,
-  generatePostInstallScript,
-  generateWinPeInstallScript,
-  generateStartnetCmd,
-} from './utils/generators';
+import { buildGeneratedFiles } from './utils/generators';
 import {
   Check,
-  ChevronLeft,
-  ChevronRight,
   HardDrive,
   Usb,
   RefreshCw,
@@ -26,21 +19,18 @@ import {
   Sparkles,
   ShieldCheck,
   Cpu,
-  Monitor,
   Download,
   FolderOpen,
   Play,
-  Terminal,
-  FileCode,
   Layers,
-  Settings,
 } from 'lucide-react';
 
 export default function App() {
   const [currentStep, setCurrentStep] = useState(1);
 
-  // Branding & Order
-  const [brandName, setBrandName] = useState('Fosters PC');
+  // Branding & Order (Section 4.1 & [BUG-08])
+  const [brandName, setBrandName] = useState(defaultBranding.brandName || 'Fosters PC');
+  const [tagline, setTagline] = useState(defaultBranding.tagline || 'GAME RELIGION');
   const [orderNumber, setOrderNumber] = useState('');
 
   // Step 2: Version & Theme
@@ -75,7 +65,7 @@ export default function App() {
   const [focusedItemId, setFocusedItemId] = useState('chrome');
 
   // Step 5: User Settings
-  const [username, setUsername] = useState('Fosters');
+  const [username, setUsername] = useState(defaultBranding.defaultUsername || 'Fosters');
   const [selectedUserSettings, setSelectedUserSettings] = useState(() =>
     USER_SETTINGS_OPTIONS.filter((o) => o.defaultChecked).map((o) => o.id)
   );
@@ -90,7 +80,13 @@ export default function App() {
   const [installProgress, setInstallProgress] = useState(0);
   const [installSubStatus, setInstallSubStatus] = useState('Подготавливаем профиль Windows');
 
-  // Load real physical disks when running inside Electron
+  // Sync Electron window title with brandName (Section 4.1)
+  useEffect(() => {
+    const effectiveBrand = brandName.trim() || defaultBranding.brandName || 'Fosters PC';
+    window.rescueApi?.setWindowTitle?.(effectiveBrand);
+  }, [brandName]);
+
+  // [BUG-02] Load real physical disks and default to the first non-USB drive
   const refreshDisks = async () => {
     setLoadingDisks(true);
     try {
@@ -98,7 +94,8 @@ export default function App() {
         const res = await window.rescueApi.getDisks();
         if (res?.ok && Array.isArray(res.disks) && res.disks.length > 0) {
           setDisks(res.disks);
-          setSelectedDiskNumber(res.disks[0].number);
+          const firstInternal = res.disks.find((d) => !d.isUsb) || res.disks[0];
+          setSelectedDiskNumber(firstInternal.number);
         }
       }
     } catch (_err) {
@@ -120,12 +117,10 @@ export default function App() {
       'Удаляем только перечисленные потребительские приложения Microsoft. Xbox, безопасность и Windows Update сохраняются.',
       'Настраиваем схему электропитания «Высокая производительность» и отключаем парковку ядер ЦП...',
       'Применяем игровые твики реестра (MSI Mode, HAGS, отключение VBS и телеметрии)...',
-      'Применяем выбранную тему оформления и параметры Проводника Windows 11...',
-      'Устанавливаем выбранные программы и библиотеки Visual C++ / DirectX через Winget...',
+      'Применяем выбранную тему оформления, обои и параметры Проводника Windows 11...',
+      'Устанавливаем выбранные программы и библиотеки Visual C++ / DirectX (Offline USB + Winget)...',
     ];
-    let tick = 0;
     const timer = setInterval(() => {
-      tick += 1;
       setInstallProgress((prev) => {
         const next = Math.min(100, prev + 8);
         const msgIdx = Math.min(messages.length - 1, Math.floor((next / 100) * messages.length));
@@ -136,10 +131,12 @@ export default function App() {
     return () => clearInterval(timer);
   }, [currentStep, installPhase]);
 
+  const effectiveBrandName = brandName.trim() || defaultBranding.brandName || 'Fosters PC';
+
   // Config bundle for generators
   const fullConfig = useMemo(
     () => ({
-      brandName,
+      brandName: effectiveBrandName,
       orderNumber,
       profileId,
       themeId,
@@ -151,7 +148,7 @@ export default function App() {
       selectedUserSettings,
     }),
     [
-      brandName,
+      effectiveBrandName,
       orderNumber,
       profileId,
       themeId,
@@ -164,38 +161,48 @@ export default function App() {
     ]
   );
 
-  const generatedFiles = useMemo(
-    () => ({
-      autounattendXml: generateAutounattendXml(fullConfig),
-      diskpartScript: generateDiskpartScript(fullConfig),
-      postInstallScript: generatePostInstallScript(fullConfig),
-      winpeScript: generateWinPeInstallScript(fullConfig),
-      startnetCmd: generateStartnetCmd(),
-    }),
-    [fullConfig]
-  );
+  // [PERF-02] Only compute preview strings on steps that display them (Steps 3, 6, 8)
+  const shouldComputePreview = currentStep === 3 || currentStep === 6 || currentStep === 8;
+  const generatedFiles = useMemo(() => {
+    if (!shouldComputePreview) return null;
+    return buildGeneratedFiles(fullConfig);
+  }, [fullConfig, shouldComputePreview]);
 
+  // [BUG-03] & [ERR-04] Async export with cancel handling and boolean return status
   const handleExportBundle = async (askFolder = false) => {
-    if (window.rescueApi?.exportUsbBundle) {
-      const res = await window.rescueApi.exportUsbBundle({
-        askFolder,
-        ...generatedFiles,
-      });
-      if (res?.ok) {
-        setExportStatus({ ok: true, path: res.targetDir });
-      } else {
+    try {
+      const filesToExport = generatedFiles || buildGeneratedFiles(fullConfig);
+      if (window.rescueApi?.exportUsbBundle) {
+        const res = await window.rescueApi.exportUsbBundle({
+          askFolder,
+          ...filesToExport,
+        });
+        if (res?.canceled) {
+          return false;
+        }
+        if (res?.ok) {
+          setExportStatus({ ok: true, path: res.targetDir });
+          return true;
+        }
         setExportStatus({ ok: false, error: res?.error || 'Ошибка экспорта' });
+        return false;
+      } else {
+        // Browser fallback: download post-install-tweaks.ps1
+        const blob = new Blob([filesToExport.postInstallScript], {
+          type: 'text/plain;charset=utf-8',
+        });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'post-install-tweaks.ps1';
+        a.click();
+        URL.revokeObjectURL(url);
+        setExportStatus({ ok: true, path: 'Скачано через браузер (post-install-tweaks.ps1)' });
+        return true;
       }
-    } else {
-      // Browser fallback: download post-install-tweaks.ps1
-      const blob = new Blob([generatedFiles.postInstallScript], { type: 'text/plain;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'post-install-tweaks.ps1';
-      a.click();
-      URL.revokeObjectURL(url);
-      setExportStatus({ ok: true, path: 'Скачано через браузер (post-install-tweaks.ps1)' });
+    } catch (err) {
+      setExportStatus({ ok: false, error: String(err?.message || err) });
+      return false;
     }
   };
 
@@ -226,12 +233,15 @@ export default function App() {
     safeCatalogPage * ITEMS_PER_PAGE
   );
 
-  const allItemsFlat = [
-    ...CATALOG_ITEMS.programs,
-    ...CATALOG_ITEMS.drivers,
-    ...CATALOG_ITEMS.tweaks,
-    ...CATALOG_ITEMS.rgb,
-  ];
+  const allItemsFlat = useMemo(
+    () => [
+      ...CATALOG_ITEMS.programs,
+      ...CATALOG_ITEMS.drivers,
+      ...CATALOG_ITEMS.tweaks,
+      ...CATALOG_ITEMS.rgb,
+    ],
+    []
+  );
   const focusedItem =
     allItemsFlat.find((x) => x.id === focusedItemId) ||
     visibleCatalogItems[0] ||
@@ -250,7 +260,10 @@ export default function App() {
   );
 
   const selectedDisk =
-    disks.find((d) => d.number === selectedDiskNumber) || disks[0] || FALLBACK_DISKS[0];
+    disks.find((d) => d.number === selectedDiskNumber) ||
+    disks.find((d) => !d.isUsb) ||
+    disks[0] ||
+    FALLBACK_DISKS[0];
   const selectedTheme =
     WINDOWS_THEMES.find((t) => t.id === themeId) || WINDOWS_THEMES[0];
   const selectedProfile =
@@ -258,7 +271,7 @@ export default function App() {
 
   return (
     <div className="h-screen w-screen bg-[#0b1017] text-slate-100 flex flex-col select-none overflow-hidden">
-      {/* TOP NAVIGATION HEADER (Exact replica of Fosters PC header in video) */}
+      {/* TOP NAVIGATION HEADER */}
       <header className="h-20 border-b border-[#1b2634] bg-[#0d131c]/95 px-8 flex items-center justify-between shrink-0">
         {/* Brand Logo */}
         <div className="flex items-center gap-3.5">
@@ -267,10 +280,10 @@ export default function App() {
           </div>
           <div>
             <div className="text-lg font-black tracking-wider text-white uppercase leading-none">
-              {brandName}
+              {effectiveBrandName}
             </div>
             <div className="text-[10px] font-bold tracking-[0.28em] text-[#00d4b6] uppercase mt-1">
-              GAME RELIGION
+              {tagline}
             </div>
           </div>
         </div>
@@ -318,18 +331,18 @@ export default function App() {
       {/* MAIN CONTENT AREA */}
       <main className="flex-1 overflow-y-auto px-10 py-8 flex flex-col justify-between">
         {/* =====================================================================
-            STEP 01: СТАРТ (0:05 - 0:07 in video)
+            STEP 01: СТАРТ (0:04 - 0:07 in video)
            ===================================================================== */}
         {currentStep === 1 && (
           <div className="my-auto grid grid-cols-12 gap-8 items-center max-w-6xl mx-auto w-full">
             <div className="col-span-7 bg-[#111924] border border-[#1e2c3d] rounded-xl p-10 shadow-2xl relative overflow-hidden">
               <div className="absolute -top-24 -left-24 w-64 h-64 bg-[#00d4b6]/5 rounded-full blur-3xl pointer-events-none" />
               <div className="text-xs font-bold tracking-[0.2em] text-[#00d4b6] uppercase mb-3">
-                WINDOWS 11 · {brandName.toUpperCase()}
+                WINDOWS 11 · {effectiveBrandName.toUpperCase()}
               </div>
               <h1 className="text-4xl lg:text-5xl font-extrabold text-white tracking-tight leading-tight mb-4">
                 Добро пожаловать
-                <br />в {brandName}
+                <br />в {effectiveBrandName}
               </h1>
               <p className="text-xl font-semibold text-slate-200 mb-2">
                 Установим Windows вместе
@@ -366,11 +379,17 @@ export default function App() {
                     onChange={(e) => setOrderNumber(e.target.value)}
                     className="px-3 py-1.5 text-xs rounded bg-[#0c121a] border border-[#233244] text-slate-200 focus:outline-none focus:border-[#00d4b6]"
                   />
+                  {/* [BUG-08] Allow clearing input while typing; restore default onBlur */}
                   <input
                     type="text"
                     placeholder="Бренд (Fosters PC)"
                     value={brandName}
-                    onChange={(e) => setBrandName(e.target.value || 'Fosters PC')}
+                    onChange={(e) => setBrandName(e.target.value)}
+                    onBlur={() => {
+                      if (!brandName.trim()) {
+                        setBrandName(defaultBranding.brandName || 'Fosters PC');
+                      }
+                    }}
                     className="px-3 py-1.5 text-xs rounded bg-[#0c121a] border border-[#233244] text-slate-200 focus:outline-none focus:border-[#00d4b6] w-36"
                     title="Название вашего бренда в установщике"
                   />
@@ -383,9 +402,9 @@ export default function App() {
               <div className="absolute -right-12 -bottom-12 w-72 h-72 bg-[#00d4b6]/10 rounded-full blur-3xl pointer-events-none" />
               <div className="flex items-center justify-between">
                 <span className="px-3 py-1 rounded-full text-xs font-semibold bg-[#00d4b6]/15 text-[#00d4b6] border border-[#00d4b6]/30">
-                  Флешка-спаситель v2.4
+                  {defaultBranding.usbVersion || 'Флешка-спаситель v2.5'}
                 </span>
-                <span className="text-xs text-slate-400 font-mono">WinPE 11 x64 + Winget</span>
+                <span className="text-xs text-slate-400 font-mono">WinPE 11 x64 + Offline/Winget</span>
               </div>
 
               {/* Stylized PC Case Illustration */}
@@ -419,7 +438,9 @@ export default function App() {
               <div className="text-xs text-slate-400 space-y-1.5 bg-[#0b1017]/80 p-3.5 rounded-lg border border-[#1a2533]">
                 <div className="flex items-center justify-between">
                   <span>Выбранный профиль:</span>
-                  <span className="text-[#00d4b6] font-semibold">{selectedProfile.title.split('—')[0]}</span>
+                  <span className="text-[#00d4b6] font-semibold">
+                    {selectedProfile.title.split('—')[0]}
+                  </span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span>Выбрано программ и твиков:</span>
@@ -514,7 +535,9 @@ export default function App() {
                               {theme.tag}
                             </span>
                             <div className="text-xs text-white/80 font-mono">
-                              {theme.id === 'win10' ? 'Пуск слева · Классика' : 'Пуск по центру · Bloom'}
+                              {theme.id === 'win10'
+                                ? 'Пуск слева · Классика'
+                                : 'Пуск по центру · Bloom'}
                             </div>
                           </div>
                           <div className="bg-[#121b26] px-3.5 py-2.5 text-sm font-bold text-white flex items-center justify-between">
@@ -600,23 +623,30 @@ export default function App() {
                 Куда установить Windows?
               </h2>
               <p className="text-sm text-slate-400 mt-1 mb-6">
-                Выберите накопитель слева. Справа показаны его разделы. Управление разделами — отдельная
-                кнопка ниже.
+                Выберите накопитель слева. Справа показаны его разделы. Загрузочная USB-флешка
+                автоматически защищена от случайного форматирования.
               </p>
 
               <div className="grid grid-cols-12 gap-8 items-start">
                 {/* Left 5 cols: Disks list */}
                 <div className="col-span-5 flex flex-col justify-between space-y-3">
                   {disks.map((d) => {
-                    const active = d.number === selectedDisk.number;
+                    const active = d.number === selectedDisk.number && !d.isUsb;
                     return (
                       <div
                         key={d.number}
-                        onClick={() => setSelectedDiskNumber(d.number)}
-                        className={`p-4 rounded-xl border transition cursor-pointer ${
-                          active
-                            ? 'bg-[#0e292d] border-[#00d4b6] shadow-[0_0_20px_rgba(0,212,182,0.15)]'
-                            : 'bg-[#111923] border-[#1f2d3d] hover:border-slate-600'
+                        onClick={() => {
+                          // [BUG-02] Prevent selecting the bootable USB drive for OS installation/wipe
+                          if (d.isUsb) return;
+                          setSelectedDiskNumber(d.number);
+                          setSelectedPartitionId(3);
+                        }}
+                        className={`p-4 rounded-xl border transition ${
+                          d.isUsb
+                            ? 'bg-[#12161f]/80 border-rose-900/40 opacity-80 cursor-not-allowed'
+                            : active
+                            ? 'bg-[#0e292d] border-[#00d4b6] shadow-[0_0_20px_rgba(0,212,182,0.15)] cursor-pointer'
+                            : 'bg-[#111923] border-[#1f2d3d] hover:border-slate-600 cursor-pointer'
                         }`}
                       >
                         <div className="flex items-center justify-between mb-1">
@@ -628,15 +658,27 @@ export default function App() {
                             )}
                             Диск {d.number} · {d.model}
                           </span>
+                          {d.isUsb && (
+                            <span className="text-[10px] px-2 py-0.5 rounded bg-rose-950 text-rose-300 border border-rose-700/50 font-bold">
+                              ЗАЩИТА ФЛЕШКИ
+                            </span>
+                          )}
                         </div>
+                        {/* [BUG-08] Accurate disk type label (Системный диск vs Чистый диск vs Флешка) */}
                         <div
                           className={`text-xs font-mono ${
-                            d.isUsb ? 'text-rose-400 font-semibold' : 'text-[#00d4b6]'
+                            d.isUsb
+                              ? 'text-rose-400 font-semibold'
+                              : d.isSystem
+                              ? 'text-amber-300'
+                              : 'text-[#00d4b6]'
                           }`}
                         >
                           {d.isUsb
-                            ? `Флешка · ${d.busType} · ${d.sizeGb} ГБ · ${d.partitionStyle}`
-                            : `Чистый диск · ${d.busType} · ${d.sizeGb} ГБ · ${d.partitionStyle}`}
+                            ? `Флешка · ${d.busType} · ${d.sizeGb} ГБ · ${d.partitionStyle} (недоступна для стирания)`
+                            : `${d.isSystem ? 'Системный диск' : 'Чистый диск'} · ${d.busType} · ${
+                                d.sizeGb
+                              } ГБ · ${d.partitionStyle}`}
                         </div>
                       </div>
                     );
@@ -718,7 +760,7 @@ export default function App() {
                     </button>
                   </div>
 
-                  {showPartitionModal && (
+                  {showPartitionModal && generatedFiles && (
                     <div className="mt-3 p-3.5 rounded-lg bg-[#0b1017] border border-[#223247] text-xs text-slate-300 space-y-2">
                       <div className="font-semibold text-white">
                         Сценарий автоматической разметки DiskPart (UEFI / GPT):
@@ -742,7 +784,8 @@ export default function App() {
               </button>
               <button
                 onClick={() => setCurrentStep(4)}
-                className="px-8 py-3 rounded-lg bg-[#00d4b6] hover:bg-[#00e6c5] text-slate-950 font-bold text-sm shadow-[0_0_20px_rgba(0,212,182,0.3)] cursor-pointer"
+                disabled={selectedDisk?.isUsb}
+                className="px-8 py-3 rounded-lg bg-[#00d4b6] hover:bg-[#00e6c5] disabled:opacity-40 text-slate-950 font-bold text-sm shadow-[0_0_20px_rgba(0,212,182,0.3)] cursor-pointer"
               >
                 Далее
               </button>
@@ -925,7 +968,7 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* RIGHT COLUMN (4 cols): Detailed Description Panel (0:42 - 0:43 in video) */}
+                {/* RIGHT COLUMN (4 cols): Detailed Description Panel */}
                 <div className="col-span-4 bg-[#101823] border border-[#1e2c3d] rounded-xl p-5 flex flex-col justify-between">
                   {focusedItem ? (
                     <div className="space-y-4">
@@ -942,6 +985,8 @@ export default function App() {
                           <span className="text-[11px] font-mono text-[#00d4b6]">
                             {focusedItem.wingetId
                               ? `winget: ${focusedItem.wingetId}`
+                              : focusedItem.offlineInstaller
+                              ? `offline: ${focusedItem.offlineInstaller}`
                               : 'Системный компонент / Реестр'}
                           </span>
                         </div>
@@ -1009,12 +1054,17 @@ export default function App() {
                   type="text"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
+                  onBlur={() => {
+                    if (!username.trim()) {
+                      setUsername(defaultBranding.defaultUsername || 'Fosters');
+                    }
+                  }}
                   placeholder="Fosters"
                   className="w-full px-4 py-2.5 rounded-lg bg-[#0b1017] border border-[#253548] text-white font-semibold text-sm focus:outline-none focus:border-[#00d4b6]"
                 />
               </div>
 
-              {/* Checkboxes list (exact match to 0:51-0:55 in video) */}
+              {/* Checkboxes list */}
               <div className="space-y-2.5">
                 {visibleSettings.map((opt) => {
                   const checked = selectedUserSettings.includes(opt.id);
@@ -1134,7 +1184,9 @@ export default function App() {
                     <div className="space-y-2 text-xs">
                       <div className="flex justify-between py-1.5 border-b border-[#1b2736]">
                         <span className="text-slate-400">Профиль Windows:</span>
-                        <span className="font-bold text-white">{selectedProfile.title.split('—')[0]}</span>
+                        <span className="font-bold text-white">
+                          {selectedProfile.title.split('—')[0]}
+                        </span>
                       </div>
                       <div className="flex justify-between py-1.5 border-b border-[#1b2736]">
                         <span className="text-slate-400">Тема оформления:</span>
@@ -1145,6 +1197,10 @@ export default function App() {
                         <span className="font-bold text-white">
                           {colorMode === 'dark' ? 'Тёмный' : 'Светлый'}
                         </span>
+                      </div>
+                      <div className="flex justify-between py-1.5 border-b border-[#1b2736]">
+                        <span className="text-slate-400">Режим ЦП:</span>
+                        <span className="font-bold text-white uppercase">{cpuVendorMode}</span>
                       </div>
                       <div className="flex justify-between py-1.5 border-b border-[#1b2736]">
                         <span className="text-slate-400">Пользователь:</span>
@@ -1186,9 +1242,9 @@ export default function App() {
                         3. Экспорт на флешку
                       </div>
                       <p className="text-xs text-slate-300 leading-relaxed">
-                        Вы можете сразу сохранить готовый комплект автоматической установки (`autounattend.xml`,
-                        скрипт разметки `diskpart`, твикер первого входа `$OEM$` и лаунчер `WinPE`) на вашу
-                        флешку с Windows 11.
+                        Сохраните готовый комплект автоматической установки (`autounattend.xml`,
+                        скрипт разметки `diskpart`, твикер первого входа `$OEM$`, структуру офлайн-драйверов
+                        `$WinPEDriver$` и обои тем) на вашу флешку с Windows 11.
                       </p>
 
                       {exportStatus && (
@@ -1202,10 +1258,12 @@ export default function App() {
                           {exportStatus.ok ? (
                             <div className="space-y-1.5">
                               <div className="font-bold">Файлы успешно сохранены:</div>
-                              <div className="font-mono text-[11px] break-all">{exportStatus.path}</div>
+                              <div className="font-mono text-[11px] break-all">
+                                {exportStatus.path}
+                              </div>
                               {window.rescueApi?.openExportFolder && (
                                 <button
-                                  onClick={() => window.rescueApi.openExportFolder(exportStatus.path)}
+                                  onClick={() => window.rescueApi.openExportFolder()}
                                   className="mt-1 inline-flex items-center gap-1.5 text-[#00d4b6] hover:underline font-semibold cursor-pointer"
                                 >
                                   <FolderOpen className="w-3.5 h-3.5" /> Открыть папку в Проводнике
@@ -1241,10 +1299,12 @@ export default function App() {
                 <div className="bg-[#0c1118] border border-[#1f2d3e] rounded-xl p-4 h-[340px] flex flex-col">
                   <div className="flex items-center justify-between pb-2 mb-2 border-b border-[#1a2534] text-xs text-slate-400 font-mono">
                     <span>
-                      {activeCodeTab === 'unattend' && 'autounattend.xml (корень установочной флешки Windows 11)'}
+                      {activeCodeTab === 'unattend' &&
+                        'autounattend.xml (корень установочной флешки Windows 11)'}
                       {activeCodeTab === 'postps1' &&
                         '$OEM$/$$/Setup/Scripts/post-install-tweaks.ps1 (автозапуск при первом входе)'}
-                      {activeCodeTab === 'diskpart' && 'RescueUSB/diskpart-script.txt (разметка UEFI/GPT)'}
+                      {activeCodeTab === 'diskpart' &&
+                        'RescueUSB/diskpart-script.txt (разметка UEFI/GPT)'}
                     </span>
                     <button
                       onClick={() => handleExportBundle(false)}
@@ -1254,9 +1314,9 @@ export default function App() {
                     </button>
                   </div>
                   <pre className="flex-1 overflow-auto text-[11px] font-mono text-emerald-300 leading-relaxed select-text">
-                    {activeCodeTab === 'unattend' && generatedFiles.autounattendXml}
-                    {activeCodeTab === 'postps1' && generatedFiles.postInstallScript}
-                    {activeCodeTab === 'diskpart' && generatedFiles.diskpartScript}
+                    {activeCodeTab === 'unattend' && generatedFiles?.autounattendXml}
+                    {activeCodeTab === 'postps1' && generatedFiles?.postInstallScript}
+                    {activeCodeTab === 'diskpart' && generatedFiles?.diskpartScript}
                   </pre>
                 </div>
               )}
@@ -1270,10 +1330,11 @@ export default function App() {
               >
                 Назад
               </button>
+              {/* [ERR-04] Wait for async export before transitioning to Step 7 */}
               <button
-                onClick={() => {
-                  handleExportBundle(false);
-                  setCurrentStep(7);
+                onClick={async () => {
+                  const ok = await handleExportBundle(false);
+                  if (ok) setCurrentStep(7);
                 }}
                 className="px-8 py-3 rounded-lg bg-[#00d4b6] hover:bg-[#00e6c5] text-slate-950 font-bold text-sm shadow-[0_0_20px_rgba(0,212,182,0.3)] flex items-center gap-2 cursor-pointer"
               >
@@ -1326,7 +1387,6 @@ export default function App() {
             {installPhase === 'firstlogon' ? (
               /* EXACT WHITE POST-INSTALL WINDOW ON TOP OF WINDOWS 11 DESKTOP (0:57 - 0:58 in video) */
               <div className="relative rounded-2xl overflow-hidden border border-slate-700 shadow-2xl bg-gradient-to-br from-sky-200 via-blue-100 to-indigo-200 p-10 flex items-center justify-center min-h-[420px]">
-                {/* Simulated Windows 11 Desktop Background & Taskbar */}
                 <div className="bg-white text-slate-900 rounded-2xl shadow-[0_25px_70px_rgba(0,0,0,0.25)] border border-slate-200 p-8 w-full max-w-3xl">
                   <div className="flex items-center gap-3 mb-5">
                     <div className="w-9 h-9 rounded-lg bg-teal-50 border border-teal-300 flex items-center justify-center">
@@ -1334,10 +1394,10 @@ export default function App() {
                     </div>
                     <div>
                       <div className="text-base font-black tracking-wider text-slate-900 uppercase leading-none">
-                        {brandName}
+                        {effectiveBrandName}
                       </div>
                       <div className="text-[9px] font-bold tracking-[0.25em] text-teal-600 uppercase mt-0.5">
-                        GAME RELIGION
+                        {tagline}
                       </div>
                     </div>
                   </div>
@@ -1400,10 +1460,10 @@ export default function App() {
                     [OK] DiskPart: Созданы разделы EFI (300 МБ FAT32), MSR (16 МБ), Primary C: (NTFS)
                   </div>
                   <div className="text-emerald-400">
-                    [OK] DISM: Применение образа sources\install.wim (Index 1: Windows 11 Pro)
+                    [OK] DISM: Автопоиск и применение образа sources\install.wim / install.esd
                   </div>
                   <div className="text-[#00d4b6]">
-                    [..] Интеграция W:\Windows\Panther\unattend.xml и скрипта FirstLogonCommands...
+                    [..] Интеграция W:\Windows\Panther\unattend.xml (specialize/oobeSystem) и скрипта FirstLogonCommands...
                   </div>
                   <div className="text-slate-400">
                     [..] Запись загрузчика UEFI: bcdboot W:\Windows /s S: /f UEFI /l ru-ru
@@ -1456,10 +1516,11 @@ export default function App() {
                 </div>
                 <p className="text-slate-300 leading-relaxed">
                   Скопируйте содержимое папки <code className="text-white">usb-export</code> прямо в
-                  корень любой установочной флешки Windows 11 (созданной через Rufus, Ventoy или Media
-                  Creation Tool). Файл <code className="text-white">autounattend.xml</code> и папка{' '}
-                  <code className="text-white">$OEM$</code> автоматически разметят диск, обойдут OOBE и
-                  при первом входе запустят <code className="text-white">post-install-tweaks.ps1</code>.
+                  корень любой установочной флешки Windows 11 (Rufus, Ventoy, Media Creation Tool).
+                  Папка <code className="text-white">$WinPEDriver$</code> подтянет драйверы сети,{' '}
+                  <code className="text-white">autounattend.xml</code> разметит диск и обойдёт OOBE,
+                  а <code className="text-white">$OEM$</code> запустит{' '}
+                  <code className="text-white">post-install-tweaks.ps1</code>.
                 </p>
               </div>
 
@@ -1468,12 +1529,11 @@ export default function App() {
                   Способ 2: Запуск этого графического меню прямо внутри WinPE (как в ролике)
                 </div>
                 <p className="text-slate-300 leading-relaxed">
-                  Поместите скомпилированную сборку этого приложения в папку{' '}
-                  <code className="text-white">RescueUSB\</code> на флешке, а сгенерированный{' '}
-                  <code className="text-white">startnet.cmd</code> — в{' '}
-                  <code className="text-white">X:\Windows\System32\startnet.cmd</code> внутри{' '}
-                  <code className="text-white">sources\boot.wim</code>. При загрузке с флешки сразу
-                  откроется это меню!
+                  Соберите портативный <code className="text-white">win-rescue-usb.exe</code> (
+                  <code className="text-white">npm run dist:portable</code>), поместите его в{' '}
+                  <code className="text-white">RescueUSB\</code> на флешке и запустите{' '}
+                  <code className="text-white">scripts\inject-boot-wim.ps1</code> для интеграции в{' '}
+                  <code className="text-white">sources\boot.wim</code>.
                 </p>
               </div>
             </div>
